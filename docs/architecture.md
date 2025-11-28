@@ -4,7 +4,7 @@ This guide explains the core components of the UNI-D² library.
 
 ## Overview
 
-![Architecture Diagram](assets/architecture_diagram.svg)
+<img src="assets/architecture.png" width="550">
 
 The library follows a modular design where Algorithms coordinate training and inference by combining interchangeable components. A LightningModule (Algorithm) orchestrates the interaction between components and defines the specific loss computation logic, connecting the Forward Process (noise), Noise Schedule (timing), Backbone Model (denoising), and Sampler (generation).
 
