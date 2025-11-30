@@ -53,11 +53,10 @@ PYTHONPATH=src python -u -m discrete_diffusion \
 Once you have a checkpoint, use the generation script:
 
 ```bash
-./scripts/generate_samples.sh \
-  outputs/owt/mdlm/checkpoints/last.ckpt \
-  --sampler bd3lm \
-  --num-samples 16 \
-  --num-steps 2000
+PYTHONPATH=src python -m discrete_diffusion.evaluations.generate_samples \
+  checkpoint_path=outputs/owt/mdlm/checkpoints/last.ckpt \
+  num_samples=16 \
+  num_steps=2000
 ```
 
 ## Extending
