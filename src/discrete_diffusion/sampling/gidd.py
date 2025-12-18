@@ -75,7 +75,7 @@ class GIDDSampler(Sampler):
       num_samples: Number of samples to generate.
       num_steps: Number of denoising steps.
       eps: Minimum timestep value (epsilon).
-      inject_bos: Whether to inject BOS token (unused for GIDD).
+      inject_bos: Whether to inject BOS token at position 0.
     
     Returns:
       Generated token sequences of shape [num_samples, num_tokens].
@@ -84,10 +84,12 @@ class GIDDSampler(Sampler):
       num_steps = self.config.sampling.steps
     if eps is None:
       eps = getattr(self.config.algo, 't_eps', 1e-4)
-    
+
     # Sample from the prior (fully masked)
     z_t = model.hybrid_noise.sample_prior(
       (num_samples, model.num_tokens))
+    if inject_bos:
+      z_t[:, 0] = model.tokenizer.bos_token_id
     
     # Create timestep schedule from 1-eps to eps
     timesteps = torch.linspace(

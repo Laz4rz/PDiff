@@ -149,7 +149,7 @@ class GIDD(trainer_base.TrainerBase):
     self._loglinear = LogLinear()
 
   def _process_model_input(self, x0, valid_tokens):
-    return x0, None, valid_tokens
+    return x0, valid_tokens
 
   def _process_sigma(self, sigma):
     assert sigma.ndim == 2
@@ -173,9 +173,8 @@ class GIDD(trainer_base.TrainerBase):
     logits[..., self.mask_id] = self.neg_infinity
     return logits
 
-  def nll(self, input_tokens, output_tokens,
+  def nll(self, input_tokens,
           current_accumulation_step=None, train_mode=False):
-    del output_tokens
     t = self._sample_t(input_tokens.shape[0])
     z_t = self.hybrid_noise.sample_zt(input_tokens, t)
 

@@ -18,12 +18,12 @@ class AR(trainer_base.TrainerBase):
     assert self.config.prior.type == 'none'
 
   def _process_model_input(self, x0, valid_tokens):
+    valid_tokens = valid_tokens[:, 1:]
+    return x0, valid_tokens
+
+  def nll(self, x0, current_accumulation_step):
     input_tokens = x0[:, :-1]
     output_tokens = x0[:, 1:]
-    valid_tokens = valid_tokens[:, 1:]
-    return input_tokens, output_tokens, valid_tokens
-
-  def nll(self, input_tokens, output_tokens, current_accumulation_step):
     output = self.backbone(input_tokens, None)
     output[:, :, self.mask_id] = self.neg_infinity
     output = output.log_softmax(-1)

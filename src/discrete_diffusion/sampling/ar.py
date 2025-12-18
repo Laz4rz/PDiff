@@ -22,20 +22,21 @@ class ARSampler(Sampler):
       num_samples: Number of samples to generate.
       num_steps: Unused for AR (kept for API compatibility).
       eps: Unused for AR (kept for API compatibility).
-      inject_bos: Unused for AR (BOS is always injected).
-    
+      inject_bos: Whether to inject BOS token at position 0.
+
     Returns:
       Generated token sequences of shape [num_samples, num_tokens].
     """
-    del num_steps, eps, inject_bos  # Unused for AR
-    
+    del num_steps, eps  # Unused for AR
+
     # Precompute token buffer
     num_pred_tokens = model.num_tokens - 1
     x = torch.zeros(
       (num_samples, num_pred_tokens + 1),
       dtype=torch.long,
       device=model.device)
-    x[:, 0] = model.tokenizer.bos_token_id
+    if inject_bos:
+      x[:, 0] = model.tokenizer.bos_token_id
     
     # Precompute Gumbel noise for sampling
     noise = (torch.distributions.Gumbel(0, 1)

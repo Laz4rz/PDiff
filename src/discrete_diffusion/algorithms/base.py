@@ -211,10 +211,8 @@ class TrainerBase(L.LightningModule):
             current_accumulation_step=None,
             train_mode=False):
     """Generic loss aggregation for all trainer modules."""
-    (input_tokens, output_tokens,
-     valid_tokens) = self._process_model_input(x0, valid_tokens)
-    loss = self.nll(input_tokens, output_tokens,
-                    current_accumulation_step, train_mode)
+    input_tokens, valid_tokens = self._process_model_input(x0, valid_tokens)
+    loss = self.nll(input_tokens, current_accumulation_step, train_mode)
     assert loss.ndim == 2
     if self.ignore_bos:
       loss[:, 0] = 0
@@ -375,13 +373,12 @@ class TrainerBase(L.LightningModule):
   def _process_model_input(self, x0, valid_tokens):
     raise NotImplementedError
 
-  def nll(self, input_tokens, output_tokens,
+  def nll(self, input_tokens,
           current_accumulation_step=None, train_mode=False):
-    """Compute negative log likelihood for the given input and output tokens.
+    """Compute negative log likelihood for the given input tokens.
 
     Args:
         input_tokens: Input token indices.
-        output_tokens: Target token indices.
         current_accumulation_step: Current gradient accumulation step index.
         train_mode: Whether the model is in training mode.
 
@@ -401,12 +398,11 @@ class Diffusion(TrainerBase):
     assert self.loss_type in {'elbo', 'low_var'}
 
   def _process_model_input(self, x0, valid_tokens):
-    return x0, None, valid_tokens
+    return x0, valid_tokens
 
-  def nll(self, x0, output_tokens,
+  def nll(self, x0,
           current_accumulation_step=None, train_mode=False):
     """Implements diffusion-style NLL evaluation."""
-    del output_tokens
     t = self._sample_t(x0.shape[0], current_accumulation_step)
     assert t.shape[0] == x0.shape[0]
     if self.T > 0:

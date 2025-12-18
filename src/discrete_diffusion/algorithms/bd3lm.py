@@ -235,18 +235,15 @@ class BD3LM(AbsorbingState):
       start = np.random.choice(self.num_tokens)
       end = start + self.num_tokens
       input_tokens = x0[:, start: end]
-      output_tokens = x0[:, start + 1: end + 1]
       new_attention_mask = attention_mask[:, start: end]
       insert_special = getattr(self.config.data, 'insert_train_special', False)
       insert_eos = getattr(self.config.data, 'insert_train_eos', False)
       if insert_special or insert_eos:
         input_tokens[:, 0] = self.tokenizer.bos_token_id
-        output_tokens[:, -1] = self.tokenizer.eos_token_id
     else:
       input_tokens = x0
-      output_tokens = None
       new_attention_mask = attention_mask
-    return input_tokens, output_tokens, new_attention_mask
+    return input_tokens, new_attention_mask
 
   def _forward_pass_diffusion(self, x0, t=None, sampling_eps_min=None, sampling_eps_max=None):
     if sampling_eps_min is None:
@@ -285,7 +282,7 @@ class BD3LM(AbsorbingState):
       sampling_eps_min = 1e-3
       sampling_eps_max = 1.0
 
-    (input_tokens, output_tokens, attention_mask) = self._maybe_sub_sample(x0, attention_mask)
+    (input_tokens, attention_mask) = self._maybe_sub_sample(x0, attention_mask)
     loss = self._forward_pass_diffusion(
       input_tokens,
       t=t,

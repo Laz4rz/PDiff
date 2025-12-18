@@ -54,9 +54,8 @@ class PartitionMDLM(MDLM):
     return self._process_model_output(
       model_output=model_output, xt=xt, sigma=sigma)
 
-  def nll(self, x0, output_tokens,
+  def nll(self, x0,
           current_accumulation_step=None, train_mode=False):
-    del output_tokens
     t = self._sample_t(x0.shape[0],
                        current_accumulation_step)
     assert t.shape[0] == x0.shape[0]

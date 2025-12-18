@@ -13,7 +13,7 @@ dist/
 build/
 
 slurm_scripts/
-
+.cache/
 *.sh
 !examples/**/*.sh
 

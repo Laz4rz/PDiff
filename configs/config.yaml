@@ -5,17 +5,19 @@ defaults:
     - checkpoint_monitor
     - learning_rate_monitor
     - sample_saver
-  - /data: openwebtext
-  - /model: small
+  - /data: text8 
+  - /model: small_candi
   - /strategy: ddp
-  - /noise: log-linear
+  - /noise: inverse-cdf
   - /lr_scheduler: constant_warmup
   - /prior: none
-  - /sampling: default
-  - /algo: bd3lm
+  - /sampling: candi
+  - /algo: candi
 
 seed: 1
 
+# base directory for caching datasets and models 
+scratch_dir: ${oc.env:DISCRETE_DIFFUSION_SCRATCH_DIR,${oc.env:HOME}/.cache/discrete_diffusion}
 block_size: ${model.length}
 
 neg_infinity_mode: large-finite  # large-finite / true-inf
@@ -77,7 +79,7 @@ trainer:
   check_val_every_n_epoch: null
 
 wandb:
-  project: partition-generative-modeling
+  project: UNI-D2
   notes: null
   group: null
   job_type: null
