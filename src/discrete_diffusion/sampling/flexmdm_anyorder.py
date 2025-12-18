@@ -46,13 +46,13 @@ class FlexMDMAnyOrderSampler(Sampler):
       num_samples: Number of samples to generate
       num_steps: Number of sampling steps
       eps: Small constant (unused, kept for interface compatibility)
-      inject_bos: Whether to inject BOS token (unused for FlexMDM)
-      
+      inject_bos: Whether to inject BOS token at position 0.
+
     Returns:
       Generated token sequences [num_samples, max_length]
     """
-    del eps, inject_bos  # Unused
-    
+    del eps  # Unused
+
     device = model.device
     max_length = model.num_tokens
     batch_size = num_samples
@@ -65,7 +65,9 @@ class FlexMDMAnyOrderSampler(Sampler):
     xt = torch.full(
       (batch_size, max_length), pad_token, dtype=torch.int64, device=device
     )
-    
+    if inject_bos:
+      xt[:, 0] = model.tokenizer.bos_token_id
+
     dt = 1.0 / num_steps
     t = torch.zeros(batch_size, device=device)
     

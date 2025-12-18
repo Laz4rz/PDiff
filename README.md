@@ -5,8 +5,8 @@
 Moving beyond the constraints of autoregressive modeling, UNI-D² brings the benefits of iterative refinement—data efficiency, bidirectional context, and parallel decoding—to the text domain. This library serves as the missing foundation for this rapidly growing space, featuring an easily extendible architecture that supports multiple modular training methods. Our unified pipeline facilitates rapid experimentation, enables comparable evaluation, and standardizes benchmarks across the field.
 
 ## Highlights
-- Hydra + Lightning entry point (`python -m discrete_diffusion`) for experimenting with MDLM, UDLM, BD3LM, FlexMDM, GIDD, SEDD, and PartitionMDLM papers.
-- Sampling helpers that cover absorbing, BD3LM, GIDD, partition, uniform, autoregressive, and FlexMDM samplers plus a reusable `scripts/generate_samples.sh` wrapper.
+- Hydra + Lightning entry point (`python -m discrete_diffusion`) for experimenting with MDLM, UDLM, BD3LM, FlexMDM, GIDD, SEDD, PartitionMDLM, and CANDI papers.
+- Sampling helpers that cover absorbing, BD3LM, GIDD, partition, uniform, autoregressive, FlexMDM, and CANDI samplers plus a reusable `scripts/generate_samples.sh` wrapper.
 - Scripts that reproduce training recipes for datasets such as LM1B, OWT, and Text8.
 
 ## Getting Started
@@ -94,6 +94,7 @@ See `scripts/README_SAMPLING.md` for sampler options, CLI arguments, and example
 5. [GIDD](https://arxiv.org/pdf/2503.04482) – von Rütte, Dimitri, et al., *Generalized interpolating discrete diffusion*, arXiv 2025.
 6. [SEDD](https://arxiv.org/pdf/2310.16834) – Lou, Aaron, Chenlin Meng, and Stefano Ermon, *Discrete diffusion modeling by estimating the ratios of the data distribution*, arXiv 2023.
 7. [PartitionMDLM](https://arxiv.org/pdf/2505.18883) – Deschenaux, Justin, Lan Tran, and Caglar Gulcehre, *Partition Generative Modeling: Masked Modeling Without Masks*, arXiv 2025.
+8. [CANDI](https://arxiv.org/abs/2510.22510) – Pynadath, Patrick, Jiaxin Shi, and Ruqi Zhang, *CANDI: Hybrid Discrete-Continuous Diffusion Models*, arXiv 2025.
 
 ## Contributing
 Our goal is to maintain this repository as the unified starting point for future research in discrete diffusion for text, keeping it ever-growing and relevant as the field progresses. As such, it will effectively *always* be a work in progress. We welcome any contributions to help it evolve—ranging from full paper implementations with benchmarking to recommendations for features to be added.

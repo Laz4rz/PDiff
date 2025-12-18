@@ -1,4 +1,4 @@
-""""CANDI implementation from https://arxiv.org/abs/2510.22510"""
+"""CANDI implementation from https://arxiv.org/abs/2510.22510"""
 
 import torch
 import torch.nn.functional as F
@@ -8,9 +8,9 @@ import hydra
 
 class CANDI(Diffusion):
     def __init__(self, config, tokenizer):
-        vocab_size = len(tokenizer) + 1 # accounting for mask token
+        vocab_size = len(tokenizer) + 1
         super().__init__(config, tokenizer, vocab_size=vocab_size)
-        # getting custom forward process
+        self.noise = hydra.utils.instantiate(self.config.noise, vocab_size=vocab_size)
         fp_cfg = getattr(self.config.algo, "forward_process", None)
         fp_config = omegaconf.OmegaConf.create(fp_cfg)
         self._forward_process = hydra.utils.instantiate(
@@ -19,12 +19,7 @@ class CANDI(Diffusion):
         self.temp = config.algo.get("temp", 1.0)
 
     def _validate_configuration(self):
-        # for further extension on CANDI variants, ensure that names always include "candi"
-
-        # Validate that forward process is compatible with CANDI
         assert "candi" in self._forward_process.name.lower()
-
-        # Validate that the backbone is also compatible
         assert "candi" in self.config.model.name 
         return super()._validate_configuration()
     
@@ -34,9 +29,7 @@ class CANDI(Diffusion):
         else: 
             xt_tokens = xt.argmax(dim=-1)
 
-        # if not training, apply temperature 
-        if not self.training:
-            model_output = model_output / self.temp
+        model_output = model_output / self.temp
         model_output = model_output - torch.logsumexp(
             model_output, dim=-1, keepdim=True
         )
@@ -47,7 +40,6 @@ class CANDI(Diffusion):
     
     def nll_per_token(self, log_x_theta, alpha_t, dalpha_t, x0_tokens, **kwargs): 
         """Computes the negative log-likelihood per token as in Equation 13 of CANDI paper."""
-
         log_p_theta = torch.gather(
             input=log_x_theta, dim=-1, index=x0_tokens[:, :, None]
         ).squeeze(-1)
@@ -59,20 +51,20 @@ class CANDI(Diffusion):
         alpha_t = self.noise.alpha_t(t)
         alpha_t = alpha_t.unsqueeze(-1)
         assert alpha_t.ndim == 2
-        
-        
         assert t.shape[0] == x0.shape[0]
 
         noisy_input = self._forward_process.forward(x0, t)
         log_x_theta = self.forward(**noisy_input)
-        return self.nll_per_token(
+        nll = self.nll_per_token(
                 log_x_theta=log_x_theta, 
                 x0_tokens=x0,
                 **noisy_input,
-           ) 
+           )
+        return nll 
 
     def forward(self, **kwargs): 
-        model_output = self.backbone(**kwargs)
+        with torch.cuda.amp.autocast(dtype=torch.float32):
+            model_output = self.backbone(**kwargs)
         return self._process_model_output(model_output=model_output, xt=kwargs['xt'], reveal_mask=kwargs['reveal_mask'])
 
     def prior_sample(self, *batch_dims): 

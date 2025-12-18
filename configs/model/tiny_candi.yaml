@@ -1,11 +1,9 @@
-# Hydra instantiation config for DIT model
 _target_: discrete_diffusion.models.dit_candi.DIT_CANDI
 
-# candi specific fields
-mixed_coeff: 0.5 # coefficient for biasing strength 
+mixed_coeff: 0.5
 
 # Legacy fields for backward compatibility
-name: small_candi
+name: tiny_candi
 type: ddit
 hidden_size: 256
 cond_dim: 128

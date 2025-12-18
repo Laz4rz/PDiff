@@ -9,11 +9,10 @@ T: -1
 causal_attention: False
 ignore_bos: False
 parameterization: subs
-time_conditioning: False
+loss_type: elbo
+time_conditioning: True
 temp: 1.0
 
-# Step 7: configurable schedule + forward process (CANDI specific)
-# CANDI uses hybrid corruption, but is implemented in standard noise schedule API for compatibility
 noise_schedule:
   name: inverse_cdf
   eps: ${noise.eps}

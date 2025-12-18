@@ -1,4 +1,4 @@
-predictor: candi 
+predictor: candi
 steps: 128
 use_float64: True
 p_nucleus: 1.0
@@ -9,5 +9,6 @@ num_strides: 1
 inject_bos: True
 save_samples: false
 samples_path: null
+step_size: 1.0  # Euler step multiplier for continuous denoising
 sampler:
   _target_: discrete_diffusion.sampling.candi_sampler.CANDI_Sampler

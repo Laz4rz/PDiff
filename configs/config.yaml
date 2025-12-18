@@ -6,7 +6,7 @@ defaults:
     - learning_rate_monitor
     - sample_saver
   - /data: text8 
-  - /model: tiny_candi
+  - /model: small_candi
   - /strategy: ddp
   - /noise: inverse-cdf
   - /lr_scheduler: constant_warmup

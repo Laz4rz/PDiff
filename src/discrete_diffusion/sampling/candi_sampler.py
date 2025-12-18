@@ -15,6 +15,7 @@ class CANDI_Sampler(Sampler):
         self.config = config
         self.forward_process = forward_process
         self.num_steps = config.sampling.steps
+        self.step_size = getattr(config.sampling, 'step_size', 1.0)
 
 
     def _continuous_step(
@@ -37,7 +38,7 @@ class CANDI_Sampler(Sampler):
             xt=x,
             discrete_noise=time_t_vec,
             reveal_mask=reveal_mask,
-            continuous_noise=sigma_t_vec[:, None, None],
+            continuous_noise=sigma_t_vec,
             embedding=embedding_cache,
         ).double()
 
@@ -45,20 +46,17 @@ class CANDI_Sampler(Sampler):
         x0_hat = sample_categorical(denoised)
         embedding_hat = model.backbone.get_embedding(x0_hat)
         d = (embedding_cache - embedding_hat) / (sigma_t**2)
-        new_embedding_cache = embedding_cache - dt * d
+        new_embedding_cache = embedding_cache - dt * d * self.step_size
         return new_embedding_cache, x0_hat
 
     def _discrete_step(
         self, x0_hat, xt, t, dt, prev_clean_mask, noise_removal_step=False
     ):
-
         if noise_removal_step:
             s = 0
         else:
             s = t - dt
 
-        # unmasking correspends to 1-alpha(s) / 1-alpha(t)
-        # this is just s / t under a log linear schedule
         unmask = (
             torch.rand(prev_clean_mask.shape, device=prev_clean_mask.device)
             < (t - s) / t
@@ -79,12 +77,14 @@ class CANDI_Sampler(Sampler):
         clean_mask = torch.zeros(
             (num_samples, model.num_tokens), device=x.device, dtype=torch.bool
         )
-
-        timesteps = torch.linspace(0.999, eps, num_steps + 1, device=model.device)
         dt = (1 - eps) / (num_steps)
 
         self.max_sigma = continuous_noise.max().item()
         x = x.argmax(dim=-1)
+        if inject_bos:
+            x[:, 0] = model.tokenizer.bos_token_id
+            embedding_cache[:, 0] = model.backbone.get_embedding(x[:, :1]).squeeze(1)
+            clean_mask[:, 0] = True
         for i in range(num_steps):
             t = timesteps[i]
             s = timesteps[i + 1]
