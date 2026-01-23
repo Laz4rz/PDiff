@@ -20,6 +20,7 @@ This repository centralizes tooling, datasets, experiments, and evaluation pipel
 6.  **[SEDD](https://arxiv.org/pdf/2310.16834)** – Lou et al. (arXiv 2023)
 7.  **[PartitionMDLM](https://arxiv.org/pdf/2505.18883)** – Deschenaux et al. (arXiv 2025)
 8.  **[CANDI](https://arxiv.org/abs/2510.22510)** – Pynadath et al. (arXiv 2025)
+9.  **[EB-Sampler](https://arxiv.org/abs/2505.24857)** – Ben-Hamu et al. (arXiv 2025)
 
 ---
 

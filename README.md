@@ -101,6 +101,7 @@ PYTHONPATH=src python -m discrete_diffusion.evaluations.generate_samples \
 6. [SEDD](https://arxiv.org/pdf/2310.16834) – Lou, Aaron, Chenlin Meng, and Stefano Ermon, *Discrete diffusion modeling by estimating the ratios of the data distribution*, arXiv 2023.
 7. [PartitionMDLM](https://arxiv.org/pdf/2505.18883) – Deschenaux, Justin, Lan Tran, and Caglar Gulcehre, *Partition Generative Modeling: Masked Modeling Without Masks*, arXiv 2025.
 8. [CANDI](https://arxiv.org/abs/2510.22510) – Pynadath, Patrick, Jiaxin Shi, and Ruqi Zhang, *CANDI: Hybrid Discrete-Continuous Diffusion Models*, arXiv 2025.
+9. [EB-Sampler](https://arxiv.org/abs/2505.24857) – Ben-Hamu, Heli, et al., *Accelerated Sampling from Masked Diffusion Models via Entropy Bounded Unmasking*, arXiv 2025.
 
 ## Contributing
 Our goal is to maintain this repository as the unified starting point for future research in discrete diffusion for text, keeping it ever-growing and relevant as the field progresses. As such, it will effectively *always* be a work in progress. We welcome any contributions to help it evolve—ranging from full paper implementations with benchmarking to recommendations for features to be added.
