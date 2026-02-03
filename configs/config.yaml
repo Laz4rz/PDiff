@@ -71,6 +71,7 @@ trainer:
   gradient_clip_val: 1.0
   precision: 'bf16'
   num_sanity_val_steps: 2
+  max_epochs: null
   max_steps: 1_000_000
   log_every_n_steps: 100
   limit_train_batches: 1.0   # train on full dataset, can be used to toggle quick run
@@ -80,6 +81,7 @@ trainer:
 
 wandb:
   project: UNI-D2
+  save_dir: null
   notes: null
   group: null
   job_type: null

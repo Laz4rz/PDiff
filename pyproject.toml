@@ -62,7 +62,7 @@ dependencies = [
     
     # Monitoring / configuration
     "tensorboard==2.16.2",
-    "wandb==0.19.9",
+    "wandb==0.24",
     "omegaconf==2.3.0",
     "rich==13.9.4",
 ]
