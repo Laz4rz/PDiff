@@ -97,7 +97,6 @@ class GiddLoss(nn.Module):
     log_ratio = log_q_zt - log_p_zt
 
     is_loss = log_ratio.exp() - log_ratio - 1
-    is_loss *= 0.0
     elbo = elbo_weights * (kl_loss + is_loss)
     loss = ws * (kl_loss + is_loss)
 
