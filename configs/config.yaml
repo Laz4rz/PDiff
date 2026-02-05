@@ -7,9 +7,9 @@ defaults:
     - sample_saver
   - /data: text8 
   - /model: small_candi
-  - /strategy: ddp
   - /noise: inverse-cdf
   - /lr_scheduler: constant_warmup
+  - /strategy: ddp
   - /prior: none
   - /sampling: candi
   - /algo: candi

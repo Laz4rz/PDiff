@@ -28,7 +28,8 @@ class GIDDSampler(Sampler):
       Samples from the posterior distribution.
     """
     # Get model prediction (logits)
-    sigma_t = model._sigma_from_alphat(model._loglinear.alpha_t(t))
+    alpha_t = model._loglinear.alpha_t(t)
+    sigma_t = model._sigma_from_alphat(alpha_t.unsqueeze(-1))
     sigma_t = model._process_sigma(sigma_t)
     logits = model.backbone(z_t, sigma_t)
 
@@ -58,7 +59,7 @@ class GIDDSampler(Sampler):
       vz_t = F.one_hot(z_t, num_classes=model.vocab_size)
       beta_pi_ts_at_zt = beta_pi_ts.unsqueeze(1).expand_as(vz_t).gather(
         -1, z_t.unsqueeze(-1))
-      q_ts = (alpha_ts * vz_t + beta_pi_ts_at_zt)
+      q_ts = (alpha_ts.unsqueeze(1) * vz_t + beta_pi_ts_at_zt)
     else:
       mask_id = model.mask_id
       logits_nm = torch.cat([logits[..., :mask_id], logits[..., mask_id + 1:]], dim=-1)
@@ -84,7 +85,7 @@ class GIDDSampler(Sampler):
       vz_t = F.one_hot(z_t_nm, num_classes=model.vocab_size - 1)
       beta_pi_ts_at_zt = beta_pi_ts.unsqueeze(1).expand_as(vz_t).gather(
         -1, z_t_nm.unsqueeze(-1))
-      q_ts = (alpha_ts * vz_t + beta_pi_ts_at_zt)
+      q_ts = (alpha_ts.unsqueeze(1) * vz_t + beta_pi_ts_at_zt)
 
     # Compute posterior
     q_st = q_ts * q_s / q_zt
