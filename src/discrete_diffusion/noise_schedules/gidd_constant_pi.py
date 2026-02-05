@@ -1,8 +1,16 @@
-"""Hybrid noise schedule implementation."""
+"""GIDD linear diffusion with a constant noise distribution π.
+
+Implements an interpolating discrete diffusion process of the form:
+
+  q_t(z | x) = (1 - t) * 1[z = x] + t * π(z),
+
+where π is a fixed categorical distribution over the vocabulary.
+
+This module mirrors the `HybridDiffusion` interface used by the GIDD trainer:
+`probs_at_t`, `sample_zt`, `sample_prior`, and `get_alpha_betapi`.
+"""
 
 from __future__ import annotations
-
-import math
 
 import torch
 import torch.nn as nn
@@ -39,19 +47,23 @@ def sample_t(config, batch_size: int, eps: float | None = None, device=None):
   return t
 
 
-class HybridDiffusion(nn.Module):
+class GiddLinearNoise(nn.Module):
+  """Linear interpolation between clean tokens and a fixed distribution π.
 
-  def __init__(self, tokenizer, p_uniform: float = 0.0, clip_noise: float = 20, gamma: float = 1.0):
+  Args:
+    tokenizer: Tokenizer-like object with `mask_token_id` and `__len__`.
+    p_uniform: Mixture weight for a uniform-noise component (over non-mask tokens).
+      The remaining probability mass `1 - p_uniform` is assigned to the mask token.
+  """
+
+  def __init__(self, tokenizer, p_uniform: float = 0.0):
     super().__init__()
     self.tokenizer = tokenizer
-    self.mask_id = tokenizer.mask_token_id
+    self.mask_id = int(tokenizer.mask_token_id)
     self.vocab_size = int(len(tokenizer))
 
-    p_uniform = max(math.exp(-float(clip_noise)), float(p_uniform))
-
-    log_B = float(gamma) * math.log(2.0) + math.log(p_uniform) - math.log(1.0 - p_uniform)
-    self.register_buffer('log_B', torch.tensor(float(log_B)).clip(-float(clip_noise)))
-    self.register_buffer('log_gamma', torch.tensor(float(gamma)).log())
+    p_uniform = float(p_uniform)
+    p_uniform = min(max(p_uniform, 0.0), 1.0)
 
     mask = torch.zeros(self.vocab_size)
     mask[self.mask_id] = 1.0
@@ -60,21 +72,19 @@ class HybridDiffusion(nn.Module):
     unif = (1.0 - self.mask) / max(self.vocab_size - 1, 1)
     self.register_buffer('unif', unif, persistent=False)
 
-    pr = torch.full((self.vocab_size,), -1e3)
-    pr[self.mask_id] = 0.0
-    self.register_buffer('log_prior', pr - pr.logsumexp(-1, keepdim=True))
+    pi = (1.0 - p_uniform) * self.mask + p_uniform * self.unif
+    pi = pi / pi.sum().clamp_min(torch.finfo(pi.dtype).eps)
+    self.register_buffer('pi', pi, persistent=False)
+
+  def gather_pi(self, input_ids: torch.Tensor) -> torch.Tensor:
+    """Return π(x) for each token id in `input_ids`."""
+    return self.pi[input_ids]
 
   def get_alpha_betapi(self, t: torch.Tensor, eps: float = 1e-4):
+    del eps
     t = t[:, None]
-    t1m = 1.0 - t
-
-    gamma = self.log_gamma.exp()
-    B = self.log_B.exp()
-    c_t = t.pow(gamma / 2.0) * t1m.pow(gamma / 2.0) * B
-    C_t = (1.0 + c_t).clamp_min(eps)
-
-    alpha_t = t1m / C_t
-    beta_pi = (t * self.mask + c_t * self.unif) / C_t
+    alpha_t = 1.0 - t
+    beta_pi = t * self.pi.to(dtype=t.dtype)
     return alpha_t, beta_pi
 
   def probs_at_t(self, prs: torch.Tensor, t: torch.Tensor, eps: float = 1e-4) -> torch.Tensor:
@@ -90,12 +100,16 @@ class HybridDiffusion(nn.Module):
     probs = self.probs_at_t(x, t)
     z_t = sample_categorical(probs)
     return z_t
-  
+
   @torch.no_grad()
   def sample_prior(self, shape, *, device: torch.device | None = None) -> torch.Tensor:
     if device is None:
-      device = self.log_prior.device
+      device = self.pi.device
     shape = tuple(shape)
-    return torch.full(shape, self.mask_id, device=device)
+    pi = self.pi.to(device=device, dtype=torch.float32)
+    probs = pi.view(*((1,) * len(shape)), -1).expand(*shape, -1)
+    return sample_categorical(probs)
 
-__all__ = ['HybridDiffusion', 'sample_t']
+
+__all__ = ['GiddLinearNoise', 'sample_t']
+

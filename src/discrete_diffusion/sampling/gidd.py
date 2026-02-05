@@ -31,29 +31,61 @@ class GIDDSampler(Sampler):
     sigma_t = model._sigma_from_alphat(model._loglinear.alpha_t(t))
     sigma_t = model._process_sigma(sigma_t)
     logits = model.backbone(z_t, sigma_t)
-    
-    # Mask out the mask token from predictions
+
     logits = logits.clone()
     logits[..., model.mask_id] = model.neg_infinity
-    probs = logits.softmax(-1)
-    
-    # Get noise schedule values
-    q_s = model.hybrid_noise.probs_at_t(probs, s)
-    q_t = model.hybrid_noise.probs_at_t(probs, t)
-    q_zt = q_t.gather(-1, z_t.unsqueeze(-1))
-    
-    alpha_t, beta_pi_t = model.hybrid_noise.get_alpha_betapi(t)
-    alpha_s, beta_pi_s = model.hybrid_noise.get_alpha_betapi(s)
-    
-    # Compute transition probabilities
-    alpha_ts = alpha_t / alpha_s
-    beta_pi_ts = beta_pi_t - alpha_t / alpha_s * beta_pi_s
-    
-    vz_t = F.one_hot(z_t, num_classes=model.vocab_size)
-    beta_pi_ts_at_zt = beta_pi_ts.unsqueeze(1).expand_as(vz_t).gather(
-      -1, z_t.unsqueeze(-1))
-    q_ts = (alpha_ts * vz_t + beta_pi_ts_at_zt)
-    
+
+    pi = getattr(model.hybrid_noise, 'pi', None)
+    supports_mask = True
+    if pi is not None:
+      supports_mask = bool((pi[model.mask_id] > 0).item())
+
+    if supports_mask:
+      probs = logits.softmax(-1)
+
+      # Get noise schedule values
+      q_s = model.hybrid_noise.probs_at_t(probs, s)
+      q_t = model.hybrid_noise.probs_at_t(probs, t)
+      q_zt = q_t.gather(-1, z_t.unsqueeze(-1))
+
+      alpha_t, beta_pi_t = model.hybrid_noise.get_alpha_betapi(t)
+      alpha_s, beta_pi_s = model.hybrid_noise.get_alpha_betapi(s)
+
+      # Compute transition probabilities
+      alpha_ts = alpha_t / alpha_s
+      beta_pi_ts = beta_pi_t - alpha_t / alpha_s * beta_pi_s
+
+      vz_t = F.one_hot(z_t, num_classes=model.vocab_size)
+      beta_pi_ts_at_zt = beta_pi_ts.unsqueeze(1).expand_as(vz_t).gather(
+        -1, z_t.unsqueeze(-1))
+      q_ts = (alpha_ts * vz_t + beta_pi_ts_at_zt)
+    else:
+      mask_id = model.mask_id
+      logits_nm = torch.cat([logits[..., :mask_id], logits[..., mask_id + 1:]], dim=-1)
+      probs = logits_nm.softmax(-1)
+
+      alpha_t, beta_pi_t = model.hybrid_noise.get_alpha_betapi(t)
+      alpha_s, beta_pi_s = model.hybrid_noise.get_alpha_betapi(s)
+      beta_pi_t = torch.cat([beta_pi_t[..., :mask_id], beta_pi_t[..., mask_id + 1:]], dim=-1)
+      beta_pi_s = torch.cat([beta_pi_s[..., :mask_id], beta_pi_s[..., mask_id + 1:]], dim=-1)
+
+      q_s = probs.mul(alpha_s.unsqueeze(-1))
+      q_s[..., :beta_pi_s.shape[-1]].add_(beta_pi_s.unsqueeze(1))
+      q_t = probs.mul(alpha_t.unsqueeze(-1))
+      q_t[..., :beta_pi_t.shape[-1]].add_(beta_pi_t.unsqueeze(1))
+
+      z_t_nm = z_t - (z_t > mask_id).to(z_t.dtype)
+      q_zt = q_t.gather(-1, z_t_nm.unsqueeze(-1))
+
+      # Compute transition probabilities
+      alpha_ts = alpha_t / alpha_s
+      beta_pi_ts = beta_pi_t - alpha_t / alpha_s * beta_pi_s
+
+      vz_t = F.one_hot(z_t_nm, num_classes=model.vocab_size - 1)
+      beta_pi_ts_at_zt = beta_pi_ts.unsqueeze(1).expand_as(vz_t).gather(
+        -1, z_t_nm.unsqueeze(-1))
+      q_ts = (alpha_ts * vz_t + beta_pi_ts_at_zt)
+
     # Compute posterior
     q_st = q_ts * q_s / q_zt
     
@@ -105,4 +137,3 @@ class GIDDSampler(Sampler):
       z_t = self.compute_posterior(model, z_t, t, s)
     
     return z_t
-

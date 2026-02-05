@@ -7,7 +7,7 @@ T: 0  # 0 (continuous-time training)
 causal_attention: False
 
 # GIDD-specific knobs (wired in later milestones)
-loss_type: gidd
+loss_type: hybrid
 p_uniform: 0.0
 t_eps: 1e-4
 low_discrepancy_sampling: True
