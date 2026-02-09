@@ -7,6 +7,7 @@ cd "${REPO_ROOT}" || exit 1
 export PYTHONPATH="${REPO_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
 
 export CUDA_VISIBLE_DEVICES="0,1,2,3"
+export P_UNIFORM=1.0
 
 export WANDB_MODE="online"
 export WANDB_DIR="${REPO_ROOT}/wandb_logs"
@@ -24,19 +25,20 @@ uv run python -u -m discrete_diffusion \
   model=tiny \
   algo=gidd \
   algo.loss_type=gidd_constant_pi \
-  algo.p_uniform=0.0 \
-  algo.loss_weighting=raw \
+  algo.p_uniform="${P_UNIFORM}" \
+  algo.loss_weighting=dynamic \
   lr_scheduler=cosine_decay_warmup \
-  trainer.deterministic=true \
+  strategy=ddp \
+  trainer.deterministic=false \
   trainer.num_nodes=1 trainer.devices=4 \
   trainer.max_epochs=1 \
   loader.global_batch_size=512 \
   loader.batch_size=32 \
-  loader.eval_batch_size=32 \
-  trainer.log_every_n_steps=1 \
+  loader.eval_batch_size=4 \
+  trainer.log_every_n_steps=25 \
   trainer.val_check_interval=1000 \
-  trainer.limit_train_batches=0.15 \
-  trainer.limit_val_batches=0.15 \
+  trainer.limit_train_batches=0.5 \
+  trainer.limit_val_batches=0.3 \
   callbacks.checkpoint_every_n_steps.every_n_train_steps=5000 \
   trainer.precision=bf16-mixed \
   training.torch_compile=false \
@@ -49,5 +51,5 @@ uv run python -u -m discrete_diffusion \
   optim.eps=1e-9 \
   lr_scheduler.warmup_t=100 \
   wandb.save_dir="${WANDB_DIR}" \
-  wandb.name='tiny-gidd-constant-pi-p-0-raw' \
+  wandb.name="tiny-gidd-constant-pi-${P_UNIFORM}" \
   wandb.project=UNI-D2
