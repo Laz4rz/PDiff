@@ -6,7 +6,7 @@ cd "${REPO_ROOT}" || exit 1
 
 export PYTHONPATH="${REPO_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
 
-export CUDA_VISIBLE_DEVICES="4,5,6,7"
+export CUDA_VISIBLE_DEVICES="4"
 
 export WANDB_MODE="online"
 export WANDB_DIR="${REPO_ROOT}/wandb_logs"
@@ -28,8 +28,9 @@ uv run python -u -m discrete_diffusion \
   algo.loss_weighting=raw \
   lr_scheduler=cosine_decay_warmup \
   trainer.deterministic=true \
-  trainer.num_nodes=1 trainer.devices=4 \
+  trainer.num_nodes=1 trainer.devices=1 \
   trainer.max_epochs=1 \
+  strategy=single-device \
   loader.global_batch_size=512 \
   loader.batch_size=32 \
   loader.eval_batch_size=32 \
@@ -49,5 +50,5 @@ uv run python -u -m discrete_diffusion \
   optim.eps=1e-9 \
   lr_scheduler.warmup_t=100 \
   wandb.save_dir="${WANDB_DIR}" \
-  wandb.name='tiny-gidd-p-0-raw-hardcode-is-loss-0' \
+  wandb.name='tiny-gidd-p-0-raw' \
   wandb.project=UNI-D2
