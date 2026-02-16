@@ -24,7 +24,7 @@ if str(SRC) not in sys.path:
 
 from discrete_diffusion.data import get_tokenizer
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 torch.set_float32_matmul_precision("high")
 torch.set_grad_enabled(False)
 
@@ -51,11 +51,12 @@ def load_model_from_run(run_dir: Path, ckpt_type: Literal["best", "last"] = "bes
     return model, tokenizer, ckpt_path, ckpt_cfg, hydra_cfg
 
 
-NUM_SAMPLES = 8
+NUM_SAMPLES = 1
 NUM_STEPS = None  # use model default
-RUN_DIR = ROOT / "outputs/roneneldan/TinyStories/2026.02.05/155200"
+# RUN_DIR = ROOT / "outputs/roneneldan/TinyStories/2026.02.05/194344"
+RUN_DIR = ROOT / "outputs/roneneldan/TinyStories/2026.02.05/194409"
 SHOW_STEPS = True
-STEP_EVERY = 50
+STEP_EVERY = 32
 STEP_MAX_SAMPLES = 2
 SKIP_SPECIAL_TOKENS = False
 EPS = None  # set to a float to override (e.g., 1e-5)
