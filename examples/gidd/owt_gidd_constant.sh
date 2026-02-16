@@ -35,10 +35,10 @@ uv run python -u -m discrete_diffusion \
   loader.global_batch_size=512 \
   loader.batch_size=32 \
   loader.eval_batch_size=4 \
-  trainer.log_every_n_steps=25 \
+  trainer.log_every_n_steps=10 \
   trainer.val_check_interval=1000 \
-  trainer.limit_train_batches=0.5 \
-  trainer.limit_val_batches=0.3 \
+  trainer.limit_train_batches=0.05 \
+  trainer.limit_val_batches=0.05 \
   callbacks.checkpoint_every_n_steps.every_n_train_steps=5000 \
   trainer.precision=bf16-mixed \
   training.torch_compile=false \

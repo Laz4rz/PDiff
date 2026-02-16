@@ -4,6 +4,7 @@ defaults:
     - checkpoint_every_n_steps
     - checkpoint_monitor
     - learning_rate_monitor
+    - final_metrics
     - sample_saver
   - /data: text8 
   - /model: small_candi
@@ -51,6 +52,9 @@ eval:
   disable_ema: False
   compute_perplexity_on_sanity: False
   generate_samples: True
+  run_validation_at_train_end: true
+  train_end_validation_ckpt_path: last
+  train_end_validation_metrics_path: ${cwd:}/train_end_validation_metrics.json
   save_validation_samples: false
   generated_samples_path: ${cwd:}/samples.json
   results_json_path: null
