@@ -15,7 +15,7 @@ tie_word_embeddings: False
 vocab_lookup: True
 causal_attention: false
 adaln: true
-max_tokens: 128
+max_tokens: 128 # unused
 attn_type: full
 attn_backend: flex
 

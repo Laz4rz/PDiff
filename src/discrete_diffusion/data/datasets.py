@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import shutil
+import string
 import urllib
 import zipfile
 
@@ -20,6 +22,7 @@ LOGGER = utils.get_logger(__name__)
 
 __all__ = [
     "generate_synthetic_dataset",
+    "generate_star_graph_dataset",
     "get_lambada_test_dataset",
     "get_text8_dataset",
 ]
@@ -64,6 +67,125 @@ def generate_synthetic_dataset(train_dataset_size, validation_dataset_size,
     'train': train_dataset,
     'validation': validation_dataset,
   }
+
+
+def _build_star_graph_prompt(
+    *,
+    rng: random.Random,
+    context_window: int,
+    nvertices: int,
+    ndistractors: int,
+    max_attention: int) -> tuple[str, str]:
+  if context_window < 1:
+    raise ValueError("star_graph context_window must be >= 1")
+  if nvertices < 2:
+    raise ValueError("star_graph nvertices must be >= 2")
+  if nvertices > len(string.ascii_uppercase):
+    raise ValueError(
+      f"star_graph nvertices must be <= {len(string.ascii_uppercase)}")
+  if ndistractors < 0:
+    raise ValueError("star_graph ndistractors must be >= 0")
+
+  vertices = list(string.ascii_uppercase[:nvertices])
+  graph = {}
+  for vertex in vertices:
+    targets = [candidate for candidate in vertices if candidate != vertex]
+    graph[vertex] = rng.choice(targets)
+
+  query_node = rng.choice(vertices)
+  answer_node = graph[query_node]
+  edges = [(query_node, answer_node)]
+  for _ in range(context_window - 1):
+    vertex = rng.choice(vertices)
+    edges.append((vertex, graph[vertex]))
+
+  if max_attention <= 0:
+    selected_edges = edges[:1]
+  elif max_attention >= len(edges):
+    selected_edges = list(edges)
+  else:
+    selected_edges = rng.sample(edges, max_attention)
+  rng.shuffle(selected_edges)
+
+  max_num_distractors = min(ndistractors, len(vertices) - 1)
+  distractor_pool = [vertex for vertex in vertices if vertex != answer_node]
+  distractors = rng.sample(distractor_pool, k=max_num_distractors)
+  options = [answer_node] + distractors
+  rng.shuffle(options)
+
+  selected_edges_str = ', '.join(
+    [f"{{{source}, {target}}}" for source, target in selected_edges])
+  options_str = ', '.join(options)
+  prompt = (
+    "Given the following list of directed edges in a graph:\n"
+    f"[{selected_edges_str}]\n"
+    "And the query node:\n"
+    f"{query_node}\n"
+    "What is the correct next node in the sequence among the "
+    f"following options: [{options_str}]?"
+  )
+  return prompt, answer_node
+
+
+def _generate_star_graph_texts(
+    dataset_size: int,
+    *,
+    seed: int,
+    context_window: int,
+    nvertices: int,
+    ndistractors: int,
+    max_attention: int,
+    instruction: str) -> list[str]:
+  rng = random.Random(seed)
+  texts = []
+  for _ in range(dataset_size):
+    prompt, answer = _build_star_graph_prompt(
+      rng=rng,
+      context_window=context_window,
+      nvertices=nvertices,
+      ndistractors=ndistractors,
+      max_attention=max_attention)
+    text = (
+      f"Instruction: {instruction}\n"
+      f"Input: {prompt}\n"
+      f"Output: {answer}"
+    )
+    texts.append(text)
+  return texts
+
+
+def generate_star_graph_dataset(
+    train_dataset_size: int,
+    validation_dataset_size: int,
+    *,
+    context_window: int,
+    nvertices: int,
+    ndistractors: int,
+    max_attention: int,
+    instruction: str,
+    train_seed: int,
+    validation_seed: int):
+  """Generate a Star-Graph dataset (ported from Next-Token-Failures, MIT)."""
+  train_texts = _generate_star_graph_texts(
+    train_dataset_size,
+    seed=train_seed,
+    context_window=context_window,
+    nvertices=nvertices,
+    ndistractors=ndistractors,
+    max_attention=max_attention,
+    instruction=instruction)
+  validation_texts = _generate_star_graph_texts(
+    validation_dataset_size,
+    seed=validation_seed,
+    context_window=context_window,
+    nvertices=nvertices,
+    ndistractors=ndistractors,
+    max_attention=max_attention,
+    instruction=instruction)
+  return datasets.DatasetDict({
+    "train": datasets.Dataset.from_dict({"text": train_texts}),
+    "validation": datasets.Dataset.from_dict({"text": validation_texts}),
+  })
 
 
 def get_lambada_test_dataset():
@@ -142,4 +264,3 @@ def get_text8_dataset(cache_dir, max_seq_length=256, drop_last=True,
   else:
     dataset = datasets.load_from_disk(cache_dir)
   return dataset
-

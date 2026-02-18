@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import functools
 import os
-from typing import Optional
+from collections.abc import Mapping
+from typing import Any, Optional
 
 import datasets
 import tokenizers
@@ -13,6 +14,7 @@ import transformers
 
 from .. import utils
 from .datasets import (
+    generate_star_graph_dataset,
     generate_synthetic_dataset,
     get_lambada_test_dataset,
     get_text8_dataset,
@@ -37,6 +39,81 @@ __all__ = [
     "get_dataloaders",
 ]
 
+class DatasetConfig:
+  def __init__(
+      self,
+      key_type_dict: dict[str, type],
+      *,
+      dataset_name: str,
+      config_name: str = "data.dataset_config"):
+    self.key_type_dict = dict(key_type_dict)
+    self.keys = tuple(self.key_type_dict.keys())
+    self.dataset_name = dataset_name
+    self.config_name = config_name
+    self.config: dict[str, Any] = {}
+
+  def init(self, config_dict: Optional[Mapping[str, Any]]) -> dict[str, Any]:
+    self.config = self.validate(config_dict)
+    return self.config
+
+  def validate(self, config_dict: Optional[Mapping[str, Any]]) -> dict[str, Any]:
+    if config_dict is None:
+      raise KeyError(
+        f"Dataset '{self.dataset_name}' requires "
+        f"'{self.config_name}' with explicit keys.")
+    if not isinstance(config_dict, Mapping):
+      raise TypeError(
+        f"Dataset '{self.dataset_name}' expected '{self.config_name}' "
+        f"to be a mapping, got {type(config_dict).__name__}.")
+
+    config = dict(config_dict)
+    missing = [key for key in self.keys if key not in config]
+    unexpected = [key for key in config.keys() if key not in self.key_type_dict]
+    if missing or unexpected:
+      details = []
+      if missing:
+        details.append(f"missing keys: {missing}")
+      if unexpected:
+        details.append(f"unexpected keys: {unexpected}")
+      raise KeyError(
+        f"Dataset '{self.dataset_name}' has invalid '{self.config_name}' "
+        f"({'; '.join(details)}).")
+
+    validated: dict[str, Any] = {}
+    type_errors = []
+    for key, expected_type in self.key_type_dict.items():
+      value = config[key]
+      if expected_type is int:
+        is_valid = isinstance(value, int) and not isinstance(value, bool)
+      else:
+        is_valid = isinstance(value, expected_type)
+      if not is_valid:
+        type_errors.append(
+          f"{key}={value!r} (expected {expected_type.__name__})")
+        continue
+      validated[key] = value
+    if type_errors:
+      raise TypeError(
+        f"Dataset '{self.dataset_name}' has invalid '{self.config_name}' "
+        f"value types: {type_errors}")
+
+    return validated
+
+
+STAR_GRAPH_DATASET_CONFIG = DatasetConfig(
+  {
+    "train_dataset_size": int,
+    "validation_dataset_size": int,
+    "context_window": int,
+    "nvertices": int,
+    "ndistractors": int,
+    "max_attention": int,
+    "instruction": str,
+    "train_seed": int,
+    "validation_seed": int,
+  },
+  dataset_name="star_graph")
+
 
 def get_dataset(dataset_name,
                 tokenizer,
@@ -50,7 +127,8 @@ def get_dataset(dataset_name,
                 streaming=False,
                 revision: Optional[str] = None,
                 min_length: int = 0,
-                chunking: str = "none"):
+                chunking: str = "none",
+                dataset_config: Optional[dict] = None):
   chunking_mode = (chunking or "none").lower()
   if chunking_mode not in {"none", "double_newline"}:
     raise ValueError(f"Unsupported chunking mode: {chunking_mode}")
@@ -152,6 +230,21 @@ def get_dataset(dataset_name,
       validation_dataset_size=1024,
       seq_len=32,
       vocab_size=256,
+    )
+  elif dataset_name == "star_graph":
+    if streaming:
+      raise ValueError("star_graph dataset generation does not support streaming.")
+    star_graph_config = STAR_GRAPH_DATASET_CONFIG.init(dataset_config)
+    dataset = generate_star_graph_dataset(
+      train_dataset_size=star_graph_config["train_dataset_size"],
+      validation_dataset_size=star_graph_config["validation_dataset_size"],
+      context_window=star_graph_config["context_window"],
+      nvertices=star_graph_config["nvertices"],
+      ndistractors=star_graph_config["ndistractors"],
+      max_attention=star_graph_config["max_attention"],
+      instruction=star_graph_config["instruction"],
+      train_seed=star_graph_config["train_seed"],
+      validation_seed=star_graph_config["validation_seed"],
     )
   else:
     dataset = datasets.load_dataset(
@@ -354,6 +447,7 @@ def get_dataloaders(config, tokenizer, skip_train=False,
   default_chunking = config.data.get("chunking", "none")
   train_chunking = config.data.get("train_chunking", default_chunking)
   valid_chunking = config.data.get("valid_chunking", default_chunking)
+  dataset_config = config.data.get("dataset_config", None)
   if skip_train:
     train_set = None
   else:
@@ -373,7 +467,8 @@ def get_dataloaders(config, tokenizer, skip_train=False,
       num_proc=config.loader.num_workers,
       revision=config.data.get("train_revision", None),
       min_length=train_min_length,
-      chunking=train_chunking)
+      chunking=train_chunking,
+      dataset_config=dataset_config)
 
   if config.data.valid in ["text8", "lm1b", "ag_news"]:
     validation_split = "test"
@@ -398,7 +493,8 @@ def get_dataloaders(config, tokenizer, skip_train=False,
       num_proc=config.loader.num_workers,
       revision=config.data.get("valid_revision", None),
       min_length=valid_min_length,
-      chunking=valid_chunking)
+      chunking=valid_chunking,
+      dataset_config=dataset_config)
 
   if skip_train:
     train_loader = None
