@@ -337,8 +337,10 @@ def generate_prefix_dataset():
     return datasets.DatasetDict(
         {
             "train": datasets.Dataset.from_dict(
-                {"prefix": prefixes, "completions": completions}
+                {"prefixes": prefixes, "completions": completions}
             ),
-            "validation": datasets.Dataset.from_dict({"text": []}),
+            "validation": datasets.Dataset.from_dict(
+                {"prefixes": prefixes, "completions": completions}
+            )
         }
     )

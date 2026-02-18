@@ -311,7 +311,50 @@ def get_dataset(
 
     def preprocess_and_tokenize(example):
         if "prefixes" in example and "completions" in example:
-            pass
+            prefixes = tokenizer(
+                example["prefixes"],
+                add_special_tokens=False,
+                return_attention_mask=False,
+                return_token_type_ids=False,
+            )
+            completions = tokenizer(
+                example["completions"],
+                add_special_tokens=False,
+                return_attention_mask=False,
+                return_token_type_ids=False,
+            )
+            input_ids = []
+            attention_mask = []
+            loss_mask = []
+            for p_ids, c_ids in zip(prefixes["input_ids"], completions["input_ids"]):
+                p_ids = list(p_ids)
+                c_ids = list(c_ids)
+
+                # Truncate before padding; keep at least one completion token when possible.
+                if len(p_ids) >= block_size and len(c_ids) > 0:
+                    p_ids = p_ids[: max(block_size - 1, 0)]
+                else:
+                    p_ids = p_ids[:block_size]
+                c_ids = c_ids[: max(block_size - len(p_ids), 0)]
+
+                seq_ids = p_ids + c_ids
+                seq_attention_mask = [1] * len(seq_ids)
+                seq_loss_mask = [0] * len(p_ids) + [1] * len(c_ids)
+
+                pad_len = block_size - len(seq_ids)
+                if pad_len > 0:
+                    seq_ids += [tokenizer.pad_token_id] * pad_len
+                    seq_attention_mask += [0] * pad_len
+                    seq_loss_mask += [0] * pad_len
+
+                input_ids.append(seq_ids)
+                attention_mask.append(seq_attention_mask)
+                loss_mask.append(seq_loss_mask)
+            return {
+                "input_ids": input_ids,
+                "attention_mask": attention_mask,
+                "loss_mask": loss_mask,
+            }
 
         if dataset_name == "ptb":
             text = example["sentence"]
