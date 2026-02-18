@@ -1,4 +1,5 @@
 """DiT model architecture adapted for continuous-discrete hybrid diffusion."""
+
 import math
 
 import huggingface_hub
@@ -46,10 +47,7 @@ class EmbeddingLayer(nn.Module):
 
 # assumes that the vocab size is counting the mask token
 class DIT_CANDI(nn.Module, huggingface_hub.PyTorchModelHubMixin):
-    def __init__(self, 
-                 config, 
-                 vocab_size: int, 
-                 mixed_coeff: float=.5):
+    def __init__(self, config, vocab_size: int, mixed_coeff: float = 0.5):
         super().__init__()
         if isinstance(config, dict):
             config = omegaconf.OmegaConf.create(config)
@@ -58,17 +56,15 @@ class DIT_CANDI(nn.Module, huggingface_hub.PyTorchModelHubMixin):
         self.config = config.model
         self.vocab_size = vocab_size
         dim = config.model.hidden_size
-        self.dim=dim
+        self.dim = dim
         cond_dim = config.model.cond_dim
-        self.vocab_embed = EmbeddingLayer(dim,vocab_size)
+        self.vocab_embed = EmbeddingLayer(dim, vocab_size)
         self.mask_index = vocab_size
-
 
         if not self.causal:
             self.sigma_map = TimestepEmbedder(cond_dim)
         self.rotary_emb = Rotary(dim // config.model.n_heads)
         self.mixed_coeff = mixed_coeff
-
 
         blocks = []
         for _ in range(config.model.n_blocks):
@@ -94,35 +90,52 @@ class DIT_CANDI(nn.Module, huggingface_hub.PyTorchModelHubMixin):
             adaLN=self.adaLN,
         )
 
-    def forward(self, xt, discrete_noise, reveal_mask, continuous_noise, embedding=None, **kwargs):
+    def forward(
+        self,
+        xt,
+        discrete_noise,
+        reveal_mask,
+        continuous_noise,
+        embedding=None,
+        **kwargs,
+    ):
         x = xt
         sigma = -1 * torch.log(1 - discrete_noise)
-        c_in = 1 / (1 + continuous_noise ** 2) ** .5
+        c_in = 1 / (1 + continuous_noise**2) ** 0.5
 
         x = self.vocab_embed(x)
 
         special = self.vocab_embed.embedding[-1].view(1, 1, -1).expand_as(x)
         mask = reveal_mask.unsqueeze(-1).float()
-        coeffs = torch.ones(mask.size(0), device=mask.device)[:, None, None] * self.mixed_coeff
+        coeffs = (
+            torch.ones(mask.size(0), device=mask.device)[:, None, None]
+            * self.mixed_coeff
+        )
 
         if embedding is not None:
-            x = x * mask + (1 - mask) * (coeffs * special / special.norm(dim=-1, keepdim=True) + (1 - coeffs) * embedding * c_in[:, None, None])
+            x = x * mask + (1 - mask) * (
+                coeffs * special / special.norm(dim=-1, keepdim=True)
+                + (1 - coeffs) * embedding * c_in[:, None, None]
+            )
         else:
-            x = x * mask + (1 - mask) * (coeffs * special / special.norm(dim=-1, keepdim=True) + (1 - coeffs) * x * c_in[:, None, None])
+            x = x * mask + (1 - mask) * (
+                coeffs * special / special.norm(dim=-1, keepdim=True)
+                + (1 - coeffs) * x * c_in[:, None, None]
+            )
 
         t_cond = F.silu(self.sigma_map(sigma))
 
         rotary_cos_sin = self.rotary_emb(x)
 
-        with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+        with torch.amp.autocast("cuda", dtype=torch.bfloat16):
             for i in range(len(self.blocks)):
                 x = self.blocks[i](x, rotary_cos_sin, c=t_cond)
             logits = self.output_layer(x, c=t_cond)
 
         return logits[:, :, :-1]
-    
-    def get_embedding(self, x): 
+
+    def get_embedding(self, x):
         return self.vocab_embed(x)
-    
-    
+
+
 __all__ = ["DIT_CANDI"]

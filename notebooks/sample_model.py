@@ -62,11 +62,16 @@ SKIP_SPECIAL_TOKENS = False
 EPS = None  # set to a float to override (e.g., 1e-5)
 WRAP_WIDTH = 100
 
-def _decode_step(step_idx, num_steps, t_val, z_t, tokenizer, *, max_samples, skip_special_tokens):
+
+def _decode_step(
+    step_idx, num_steps, t_val, z_t, tokenizer, *, max_samples, skip_special_tokens
+):
     mask_id = getattr(tokenizer, "mask_token_id", None)
     if mask_id is not None:
         mask_rate = (z_t == mask_id).float().mean().item() * 100
-        header = f"Step {step_idx:>4}/{num_steps:<4}  t={t_val:.6f}  mask={mask_rate:>5.1f}%"
+        header = (
+            f"Step {step_idx:>4}/{num_steps:<4}  t={t_val:.6f}  mask={mask_rate:>5.1f}%"
+        )
     else:
         header = f"Step {step_idx:>4}/{num_steps:<4}  t={t_val:.6f}"
     print("=" * max(60, len(header)))
@@ -89,10 +94,22 @@ def _decode_step(step_idx, num_steps, t_val, z_t, tokenizer, *, max_samples, ski
 
 
 @torch.no_grad()
-def generate_with_steps(model, tokenizer, *, num_samples, num_steps, eps, step_every, max_samples, skip_special_tokens):
+def generate_with_steps(
+    model,
+    tokenizer,
+    *,
+    num_samples,
+    num_steps,
+    eps,
+    step_every,
+    max_samples,
+    skip_special_tokens,
+):
     sampler = model._create_sampler()
     if sampler is None or sampler.__class__.__name__ != "GIDDSampler":
-        samples = model.generate_samples(num_samples=num_samples, num_steps=num_steps, eps=eps)
+        samples = model.generate_samples(
+            num_samples=num_samples, num_steps=num_steps, eps=eps
+        )
         texts = tokenizer.batch_decode(samples.detach().cpu(), skip_special_tokens=True)
         for i, text in enumerate(texts):
             print(f"--- sample {i} ---")
@@ -106,19 +123,37 @@ def generate_with_steps(model, tokenizer, *, num_samples, num_steps, eps, step_e
         eps = 1e-5
     inject_bos = getattr(model.config.sampling, "inject_bos", True)
 
-    z_t = model.hybrid_noise.sample_prior((num_samples, model.num_tokens)).to(model.device)
+    z_t = model.hybrid_noise.sample_prior((num_samples, model.num_tokens)).to(
+        model.device
+    )
     if inject_bos:
         z_t[:, 0] = model.tokenizer.bos_token_id
 
     timesteps = torch.linspace(1 - eps, eps, num_steps + 1, device=model.device)
-    _decode_step(0, num_steps, timesteps[0].item(), z_t, tokenizer, max_samples=max_samples, skip_special_tokens=skip_special_tokens)
+    _decode_step(
+        0,
+        num_steps,
+        timesteps[0].item(),
+        z_t,
+        tokenizer,
+        max_samples=max_samples,
+        skip_special_tokens=skip_special_tokens,
+    )
 
     for i in range(num_steps):
         t = timesteps[i] * torch.ones(num_samples, device=model.device)
         s = timesteps[i + 1] * torch.ones(num_samples, device=model.device)
         z_t = sampler.compute_posterior(model, z_t, t, s)
         if (i + 1) % step_every == 0 or i == num_steps - 1:
-            _decode_step(i + 1, num_steps, timesteps[i + 1].item(), z_t, tokenizer, max_samples=max_samples, skip_special_tokens=skip_special_tokens)
+            _decode_step(
+                i + 1,
+                num_steps,
+                timesteps[i + 1].item(),
+                z_t,
+                tokenizer,
+                max_samples=max_samples,
+                skip_special_tokens=skip_special_tokens,
+            )
 
 
 model, tokenizer, ckpt_path, ckpt_cfg, hydra_cfg = load_model_from_run(RUN_DIR)
@@ -139,7 +174,9 @@ if SHOW_STEPS:
         skip_special_tokens=SKIP_SPECIAL_TOKENS,
     )
 else:
-    samples = model.generate_samples(num_samples=NUM_SAMPLES, num_steps=NUM_STEPS, eps=EPS)
+    samples = model.generate_samples(
+        num_samples=NUM_SAMPLES, num_steps=NUM_STEPS, eps=EPS
+    )
     texts = tokenizer.batch_decode(samples.detach().cpu(), skip_special_tokens=True)
     for i, text in enumerate(texts):
         print(f"--- sample {i} ---")

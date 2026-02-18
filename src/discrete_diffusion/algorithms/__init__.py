@@ -23,12 +23,12 @@ from .sedd import SEDD  # noqa: F401
 from .udlm import UDLM  # noqa: F401
 
 __all__ = [
-  'AR',
-  'BD3LM',
-  'FlexMDMAnyOrder',
-  'GIDD',
-  'MDLM',
-  'PartitionMDLM',
-  'SEDD',
-  'UDLM',
+    "AR",
+    "BD3LM",
+    "FlexMDMAnyOrder",
+    "GIDD",
+    "MDLM",
+    "PartitionMDLM",
+    "SEDD",
+    "UDLM",
 ]

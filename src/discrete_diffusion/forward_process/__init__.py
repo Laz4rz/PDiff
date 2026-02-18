@@ -12,7 +12,13 @@ from .flexmdm import FlexMDMForwardProcess
 from .utils import _effective_vocab_size, _mask_token_id, _unsqueeze, sample_categorical
 
 __all__ = [
-  'AbsorbingForwardProcess', 'ForwardProcess', '_unsqueeze',
-  'UniformForwardProcess', 'BlockAbsorbingForwardProcess', 'FlexMDMForwardProcess',
-  '_effective_vocab_size', '_mask_token_id', 'sample_categorical',
+    "AbsorbingForwardProcess",
+    "ForwardProcess",
+    "_unsqueeze",
+    "UniformForwardProcess",
+    "BlockAbsorbingForwardProcess",
+    "FlexMDMForwardProcess",
+    "_effective_vocab_size",
+    "_mask_token_id",
+    "sample_categorical",
 ]

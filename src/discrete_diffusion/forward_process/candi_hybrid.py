@@ -11,7 +11,7 @@ import torch.nn.functional as F
 
 class HybridForwardCANDI(ForwardProcess):
     """Hybrid noising kernel for CANDI.
-    https://arxiv.org/pdf/2510.22510 
+    https://arxiv.org/pdf/2510.22510
 
     Selects positions with probability `(1 - alpha_t)` to add Gaussian noise, with variance sigma_t.
     Leaves others the same.
@@ -34,7 +34,9 @@ class HybridForwardCANDI(ForwardProcess):
         """Computes the noisy discrete sample."""
         p_mask = (1.0 - alpha_t).to(dtype=torch.float32)
         move_indices = torch.rand(*x.shape, device=x.device) < p_mask
-        uniform_tensor = torch.randint(0, self._corruption_vocab_size, x.shape, device=x.device)
+        uniform_tensor = torch.randint(
+            0, self._corruption_vocab_size, x.shape, device=x.device
+        )
         xt = torch.where(move_indices, uniform_tensor, x)
         return xt
 
@@ -50,13 +52,15 @@ class HybridForwardCANDI(ForwardProcess):
 
         X_0 = F.one_hot(input_ids, num_classes=self.vocab_size).to(input_ids.device)
         X_t_prime = X_0 + torch.randn_like(X_0, dtype=torch.float32) * sigma_t
-        X_t = X_0 * reveal_mask.unsqueeze(-1) + X_t_prime * (1 - reveal_mask).unsqueeze(-1)
+        X_t = X_0 * reveal_mask.unsqueeze(-1) + X_t_prime * (1 - reveal_mask).unsqueeze(
+            -1
+        )
 
         return {
-            "xt": X_t, 
-            "reveal_mask": reveal_mask, 
-            "continuous_noise": sigma_t.squeeze(), 
+            "xt": X_t,
+            "reveal_mask": reveal_mask,
+            "continuous_noise": sigma_t.squeeze(),
             "discrete_noise": (1 - alpha_t).squeeze(),
-            "alpha_t": alpha_t, 
-            "dalpha_t": dalpha_t
-        }  
+            "alpha_t": alpha_t,
+            "dalpha_t": dalpha_t,
+        }

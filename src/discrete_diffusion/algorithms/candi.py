@@ -6,6 +6,7 @@ from discrete_diffusion.algorithms.base import Diffusion
 import omegaconf
 import hydra
 
+
 class CANDI(Diffusion):
     def __init__(self, config, tokenizer):
         vocab_size = len(tokenizer) + 1
@@ -20,13 +21,13 @@ class CANDI(Diffusion):
 
     def _validate_configuration(self):
         assert "candi" in self._forward_process.name.lower()
-        assert "candi" in self.config.model.name 
+        assert "candi" in self.config.model.name
         return super()._validate_configuration()
-    
-    def _process_model_output(self, xt, model_output, reveal_mask): 
-        if xt.ndim == 2: 
+
+    def _process_model_output(self, xt, model_output, reveal_mask):
+        if xt.ndim == 2:
             xt_tokens = xt
-        else: 
+        else:
             xt_tokens = xt.argmax(dim=-1)
 
         model_output = model_output / self.temp
@@ -37,15 +38,15 @@ class CANDI(Diffusion):
         model_output[reveal_mask] = self.neg_infinity
         model_output[reveal_mask, xt_tokens[reveal_mask]] = 0
         return model_output
-    
-    def nll_per_token(self, log_x_theta, alpha_t, dalpha_t, x0_tokens, **kwargs): 
+
+    def nll_per_token(self, log_x_theta, alpha_t, dalpha_t, x0_tokens, **kwargs):
         """Computes the negative log-likelihood per token as in Equation 13 of CANDI paper."""
         log_p_theta = torch.gather(
             input=log_x_theta, dim=-1, index=x0_tokens[:, :, None]
         ).squeeze(-1)
         nll = log_p_theta * dalpha_t / (1 - alpha_t)
         return nll
-    
+
     def nll(self, x0, current_accumulation_step=None, train_mode=False):
         t = self._sample_t(x0.shape[0], current_accumulation_step)
         alpha_t = self.noise.alpha_t(t)
@@ -56,20 +57,30 @@ class CANDI(Diffusion):
         noisy_input = self._forward_process.forward(x0, t)
         log_x_theta = self.forward(**noisy_input)
         nll = self.nll_per_token(
-                log_x_theta=log_x_theta, 
-                x0_tokens=x0,
-                **noisy_input,
-           )
-        return nll 
+            log_x_theta=log_x_theta,
+            x0_tokens=x0,
+            **noisy_input,
+        )
+        return nll
 
-    def forward(self, **kwargs): 
+    def forward(self, **kwargs):
         with torch.cuda.amp.autocast(dtype=torch.float32):
             model_output = self.backbone(**kwargs)
-        return self._process_model_output(model_output=model_output, xt=kwargs['xt'], reveal_mask=kwargs['reveal_mask'])
+        return self._process_model_output(
+            model_output=model_output,
+            xt=kwargs["xt"],
+            reveal_mask=kwargs["reveal_mask"],
+        )
 
-    def prior_sample(self, *batch_dims): 
-        sigma = self.noise.sigma_t(torch.tensor(.999).to(self.device))
-        noise = torch.randn(
-            *batch_dims, self.vocab_size-1, dtype=torch.float32, device=self.device
-        )  * sigma
+    def prior_sample(self, *batch_dims):
+        sigma = self.noise.sigma_t(torch.tensor(0.999).to(self.device))
+        noise = (
+            torch.randn(
+                *batch_dims,
+                self.vocab_size - 1,
+                dtype=torch.float32,
+                device=self.device,
+            )
+            * sigma
+        )
         return noise

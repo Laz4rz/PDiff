@@ -2,4 +2,4 @@
 
 from .metrics import BD3Metrics, Metrics
 
-__all__ = ['Metrics', 'BD3Metrics']
+__all__ = ["Metrics", "BD3Metrics"]

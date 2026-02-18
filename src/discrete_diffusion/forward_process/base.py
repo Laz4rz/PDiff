@@ -17,26 +17,27 @@ from ..noise_schedules.base import NoiseSchedule
 
 
 class ForwardProcess(torch.nn.Module):
-  """Abstract base class for discrete forward noising dynamics.
+    """Abstract base class for discrete forward noising dynamics.
 
-  Implementations should use `self.tokenizer` and `self.schedule` to compute
-  noised states for given inputs and timesteps.
-  """
-
-  def __init__(self, tokenizer, schedule: NoiseSchedule, name=None) -> None:
-    super().__init__()
-    self.tokenizer = tokenizer
-    self.schedule = schedule
-    self.name = name
-
-  def forward(self, input_ids: torch.Tensor, t: torch.Tensor):  # pragma: no cover - abstract method
-    """Return the noised tokens at time `t`.
-
-    Concrete classes may return additional tensors as needed (e.g.,
-    per-position `t` for blockwise sampling).
+    Implementations should use `self.tokenizer` and `self.schedule` to compute
+    noised states for given inputs and timesteps.
     """
-    raise NotImplementedError
+
+    def __init__(self, tokenizer, schedule: NoiseSchedule, name=None) -> None:
+        super().__init__()
+        self.tokenizer = tokenizer
+        self.schedule = schedule
+        self.name = name
+
+    def forward(
+        self, input_ids: torch.Tensor, t: torch.Tensor
+    ):  # pragma: no cover - abstract method
+        """Return the noised tokens at time `t`.
+
+        Concrete classes may return additional tensors as needed (e.g.,
+        per-position `t` for blockwise sampling).
+        """
+        raise NotImplementedError
 
 
 __all__ = ["ForwardProcess"]
-

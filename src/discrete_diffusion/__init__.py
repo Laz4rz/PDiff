@@ -1,6 +1,6 @@
 """UNI-D² Library
 
-A modular framework for discrete diffusion models including MDLM, SEDD, UDLM, 
+A modular framework for discrete diffusion models including MDLM, SEDD, UDLM,
 BD3LM, GIDD, and more. Built on PyTorch Lightning with Hydra configuration.
 
 Main Components:

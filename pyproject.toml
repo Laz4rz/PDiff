@@ -63,6 +63,7 @@ dependencies = [
     "omegaconf==2.3.0",
     "rich==13.9.4",
     "ipdb>=0.13.13",
+    "ruff>=0.15.1",
 ]
 
 [project.optional-dependencies]

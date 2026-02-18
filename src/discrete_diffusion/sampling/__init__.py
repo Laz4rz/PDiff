@@ -12,12 +12,12 @@ from .uniform import UniformSampler
 from .eb_sampler import EBSampler
 
 __all__ = [
-  "Sampler",
-  "AbsorbingSampler",
-  "ARSampler",
-  "BD3LMSampler",
-  "GIDDSampler",
-  "PartitionSampler",
-  "UniformSampler",
-  "EBSampler",
+    "Sampler",
+    "AbsorbingSampler",
+    "ARSampler",
+    "BD3LMSampler",
+    "GIDDSampler",
+    "PartitionSampler",
+    "UniformSampler",
+    "EBSampler",
 ]

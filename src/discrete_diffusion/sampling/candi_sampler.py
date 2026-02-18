@@ -15,8 +15,7 @@ class CANDI_Sampler(Sampler):
         self.config = config
         self.forward_process = forward_process
         self.num_steps = config.sampling.steps
-        self.step_size = getattr(config.sampling, 'step_size', 1.0)
-
+        self.step_size = getattr(config.sampling, "step_size", 1.0)
 
     def _continuous_step(
         self,
@@ -92,7 +91,7 @@ class CANDI_Sampler(Sampler):
             sigma_s = continuous_noise[i]
             sigma_t = continuous_noise[i + 1]
             embedding_cache, x0_hat = self._continuous_step(
-                model=model, 
+                model=model,
                 x=x,
                 time_t=t,
                 time_s=s,
@@ -105,6 +104,6 @@ class CANDI_Sampler(Sampler):
                 x0_hat, x, t, dt, prev_clean_mask=clean_mask, noise_removal_step=False
             )
         return x
-    
-    
+
+
 __all__ = ["CANDI_Sampler"]
