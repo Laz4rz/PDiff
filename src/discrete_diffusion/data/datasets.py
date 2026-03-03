@@ -23,10 +23,10 @@ LOGGER = utils.get_logger(__name__)
 __all__ = [
     "generate_synthetic_dataset",
     "generate_star_graph_dataset",
+    "generate_prefix_dataset",
     "get_lambada_test_dataset",
     "get_text8_dataset",
 ]
-
 
 def _generate_synthetic_data(dataset_size, seq_len, vocab_size):
     dataset = np.zeros((dataset_size, seq_len), dtype=int)
@@ -281,7 +281,7 @@ def get_text8_dataset(cache_dir, max_seq_length=256, drop_last=True, crop_train=
     return dataset
 
 
-def generate_prefix_dataset():
+def generate_prefix_dataset(repeat_factor: int = 512) -> datasets.DatasetDict:
     prefixes = [
         "The capital of France is:",
         "The capital of Germany is:",
@@ -334,6 +334,12 @@ def generate_prefix_dataset():
         "kitten",
         "triangle",
     ]
+    if repeat_factor < 1:
+        raise ValueError("prefix repeat_factor must be >= 1")
+    prefixes = prefixes[:1]
+    completions = completions[:1]
+    prefixes = prefixes * repeat_factor
+    completions = completions * repeat_factor
     return datasets.DatasetDict(
         {
             "train": datasets.Dataset.from_dict(

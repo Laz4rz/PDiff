@@ -14,6 +14,7 @@ import transformers
 
 from .. import utils
 from .datasets import (
+    generate_prefix_dataset,
     generate_star_graph_dataset,
     generate_synthetic_dataset,
     get_lambada_test_dataset,
@@ -261,6 +262,10 @@ def get_dataset(
             train_seed=star_graph_config["train_seed"],
             validation_seed=star_graph_config["validation_seed"],
         )
+    elif dataset_name == "prefix":
+        if streaming:
+            raise ValueError("prefix dataset generation does not support streaming.")
+        dataset = generate_prefix_dataset()
     else:
         dataset = datasets.load_dataset(
             dataset_name,
@@ -329,6 +334,11 @@ def get_dataset(
             for p_ids, c_ids in zip(prefixes["input_ids"], completions["input_ids"]):
                 p_ids = list(p_ids)
                 c_ids = list(c_ids)
+                if dataset_name == "prefix":
+                    if not p_ids or p_ids[0] != BOS:
+                        p_ids = [BOS] + p_ids
+                    if not c_ids or c_ids[-1] != EOS:
+                        c_ids = c_ids + [EOS]
 
                 # Truncate before padding; keep at least one completion token when possible.
                 if len(p_ids) >= block_size and len(c_ids) > 0:
@@ -345,7 +355,7 @@ def get_dataset(
                 if pad_len > 0:
                     seq_ids += [tokenizer.pad_token_id] * pad_len
                     seq_attention_mask += [0] * pad_len
-                    seq_loss_mask += [0] * pad_len
+                    seq_loss_mask += [1] * pad_len
 
                 input_ids.append(seq_ids)
                 attention_mask.append(seq_attention_mask)
