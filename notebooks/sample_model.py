@@ -1,7 +1,7 @@
 import sys
 import textwrap
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Sequence
 
 import hydra
 import torch
@@ -51,12 +51,17 @@ def load_model_from_run(run_dir: Path, ckpt_type: Literal["best", "last"] = "bes
     return model, tokenizer, ckpt_path, ckpt_cfg, hydra_cfg
 
 
-NUM_SAMPLES = 1
+NUM_SAMPLES = 4
 NUM_STEPS = None  # use model default
 # RUN_DIR = ROOT / "outputs/roneneldan/TinyStories/2026.02.05/194344"
-RUN_DIR = ROOT / "outputs/roneneldan/TinyStories/2026.02.05/194409"
+# RUN_DIR = ROOT / "outputs/roneneldan/TinyStories/2026.02.05/194409"
+RUN_DIR = ROOT / "outputs/prefix/2026.03.03/222410"
+# Set prompts to enable prefix-conditioned sampling (None keeps unconditional sampling).
+PREFIX_PROMPTS: list[str] | None = None
+# PREFIX_PROMPTS = ["The capital of Germany is:", "The capital of France is:", "The capital of Italy is:", "The capital of Spain is:"]
+PREFIX_PROMPTS = ["The capital of France is:"]
 SHOW_STEPS = True
-STEP_EVERY = 32
+STEP_EVERY = 64
 STEP_MAX_SAMPLES = 2
 SKIP_SPECIAL_TOKENS = False
 EPS = None  # set to a float to override (e.g., 1e-5)
@@ -93,6 +98,62 @@ def _decode_step(
     print()
 
 
+def _expand_prefix_prompts(prefix_prompts: Sequence[str], num_samples: int) -> list[str]:
+    if len(prefix_prompts) == 0:
+        raise ValueError("PREFIX_PROMPTS must contain at least one prompt.")
+    if len(prefix_prompts) == num_samples:
+        return list(prefix_prompts)
+    if len(prefix_prompts) == 1:
+        return [prefix_prompts[0]] * num_samples
+    return [prefix_prompts[i % len(prefix_prompts)] for i in range(num_samples)]
+
+
+def _tokenize_prefix_prompts(
+    tokenizer,
+    prefix_prompts: Sequence[str],
+    num_samples: int,
+) -> tuple[list[str], list[list[int]]]:
+    prompts = _expand_prefix_prompts(prefix_prompts, num_samples)
+    tokenized = tokenizer(
+        prompts, add_special_tokens=False, return_attention_mask=False
+    )["input_ids"]
+    bos_id = tokenizer.bos_token_id
+    prefix_token_ids = []
+    for ids in tokenized:
+        ids = list(ids)
+        if bos_id is not None and (len(ids) == 0 or ids[0] != bos_id):
+            ids = [bos_id] + ids
+        prefix_token_ids.append(ids)
+    return prompts, prefix_token_ids
+
+
+def _apply_prefix_constraints(z_t: torch.Tensor, prefix_token_ids: Sequence[Sequence[int]]):
+    seq_len = z_t.shape[1]
+    for row_idx, ids in enumerate(prefix_token_ids):
+        prefix_len = min(len(ids), seq_len)
+        if prefix_len == 0:
+            continue
+        z_t[row_idx, :prefix_len] = torch.as_tensor(
+            ids[:prefix_len], device=z_t.device, dtype=z_t.dtype
+        )
+    return z_t
+
+
+def _print_prefix_completions(samples, tokenizer, prefix_prompts, prefix_token_ids):
+    eos_id = tokenizer.eos_token_id
+    samples_cpu = samples.detach().cpu()
+    for i, (prompt, prefix_ids) in enumerate(zip(prefix_prompts, prefix_token_ids)):
+        seq = samples_cpu[i].tolist()
+        suffix = seq[min(len(prefix_ids), len(seq)) :]
+        if eos_id is not None and eos_id in suffix:
+            suffix = suffix[: suffix.index(eos_id)]
+        completion = tokenizer.decode(suffix, skip_special_tokens=True).strip()
+        print(f"--- sample {i} ---")
+        print(f"prefix: {prompt}")
+        print(f"completion: {completion}")
+        print()
+
+
 @torch.no_grad()
 def generate_with_steps(
     model,
@@ -104,18 +165,27 @@ def generate_with_steps(
     step_every,
     max_samples,
     skip_special_tokens,
+    show_steps,
+    prefix_prompts,
 ):
     sampler = model._create_sampler()
+    prefix_prompt_texts = None
+    prefix_token_ids = None
     if sampler is None or sampler.__class__.__name__ != "GIDDSampler":
+        if prefix_prompts is not None:
+            raise NotImplementedError(
+                "Prefix-conditioned sampling in this notebook currently supports GIDDSampler only."
+            )
         samples = model.generate_samples(
             num_samples=num_samples, num_steps=num_steps, eps=eps
         )
-        texts = tokenizer.batch_decode(samples.detach().cpu(), skip_special_tokens=True)
-        for i, text in enumerate(texts):
-            print(f"--- sample {i} ---")
-            print(text)
-            print()
-        return
+        if show_steps:
+            texts = tokenizer.batch_decode(samples.detach().cpu(), skip_special_tokens=True)
+            for i, text in enumerate(texts):
+                print(f"--- sample {i} ---")
+                print(text)
+                print()
+        return samples, prefix_prompt_texts, prefix_token_ids
 
     if num_steps is None:
         num_steps = model.config.sampling.steps
@@ -128,23 +198,31 @@ def generate_with_steps(
     )
     if inject_bos:
         z_t[:, 0] = model.tokenizer.bos_token_id
+    if prefix_prompts is not None:
+        prefix_prompt_texts, prefix_token_ids = _tokenize_prefix_prompts(
+            tokenizer, prefix_prompts, num_samples
+        )
+        z_t = _apply_prefix_constraints(z_t, prefix_token_ids)
 
     timesteps = torch.linspace(1 - eps, eps, num_steps + 1, device=model.device)
-    _decode_step(
-        0,
-        num_steps,
-        timesteps[0].item(),
-        z_t,
-        tokenizer,
-        max_samples=max_samples,
-        skip_special_tokens=skip_special_tokens,
-    )
+    if show_steps:
+        _decode_step(
+            0,
+            num_steps,
+            timesteps[0].item(),
+            z_t,
+            tokenizer,
+            max_samples=max_samples,
+            skip_special_tokens=skip_special_tokens,
+        )
 
     for i in range(num_steps):
         t = timesteps[i] * torch.ones(num_samples, device=model.device)
         s = timesteps[i + 1] * torch.ones(num_samples, device=model.device)
         z_t = sampler.compute_posterior(model, z_t, t, s)
-        if (i + 1) % step_every == 0 or i == num_steps - 1:
+        if prefix_token_ids is not None:
+            z_t = _apply_prefix_constraints(z_t, prefix_token_ids)
+        if show_steps and ((i + 1) % step_every == 0 or i == num_steps - 1):
             _decode_step(
                 i + 1,
                 num_steps,
@@ -154,6 +232,7 @@ def generate_with_steps(
                 max_samples=max_samples,
                 skip_special_tokens=skip_special_tokens,
             )
+    return z_t, prefix_prompt_texts, prefix_token_ids
 
 
 model, tokenizer, ckpt_path, ckpt_cfg, hydra_cfg = load_model_from_run(RUN_DIR)
@@ -163,7 +242,7 @@ print("Loss Type:", ckpt_cfg.algo.loss_type)
 print("P_u=", ckpt_cfg.algo.p_uniform)
 
 if SHOW_STEPS:
-    generate_with_steps(
+    samples, prefix_prompt_texts, prefix_token_ids = generate_with_steps(
         model,
         tokenizer,
         num_samples=NUM_SAMPLES,
@@ -172,11 +251,34 @@ if SHOW_STEPS:
         step_every=STEP_EVERY,
         max_samples=STEP_MAX_SAMPLES,
         skip_special_tokens=SKIP_SPECIAL_TOKENS,
+        show_steps=True,
+        prefix_prompts=PREFIX_PROMPTS,
     )
 else:
-    samples = model.generate_samples(
-        num_samples=NUM_SAMPLES, num_steps=NUM_STEPS, eps=EPS
+    if PREFIX_PROMPTS is None:
+        samples = model.generate_samples(
+            num_samples=NUM_SAMPLES, num_steps=NUM_STEPS, eps=EPS
+        )
+        prefix_prompt_texts, prefix_token_ids = None, None
+    else:
+        samples, prefix_prompt_texts, prefix_token_ids = generate_with_steps(
+            model,
+            tokenizer,
+            num_samples=NUM_SAMPLES,
+            num_steps=NUM_STEPS,
+            eps=EPS,
+            step_every=STEP_EVERY,
+            max_samples=STEP_MAX_SAMPLES,
+            skip_special_tokens=SKIP_SPECIAL_TOKENS,
+            show_steps=False,
+            prefix_prompts=PREFIX_PROMPTS,
+        )
+
+if prefix_token_ids is not None:
+    _print_prefix_completions(
+        samples, tokenizer, prefix_prompt_texts, prefix_token_ids
     )
+else:
     texts = tokenizer.batch_decode(samples.detach().cpu(), skip_special_tokens=True)
     for i, text in enumerate(texts):
         print(f"--- sample {i} ---")

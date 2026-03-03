@@ -334,7 +334,37 @@ class GIDD(trainer_base.TrainerBase):
         logits[..., self.mask_id] = self.neg_infinity
         return logits
 
-    def nll(self, input_tokens, current_accumulation_step=None, train_mode=False):
+    def _loss(self, x0, valid_tokens, current_accumulation_step=None, train_mode=False):
+        input_tokens, valid_tokens = self._process_model_input(x0, valid_tokens)
+        loss = self.nll(
+            input_tokens,
+            current_accumulation_step,
+            train_mode,
+            valid_tokens=valid_tokens,
+        )
+        assert loss.ndim == 2
+        if self.ignore_bos:
+            loss[:, 0] = 0
+            valid_tokens[:, 0] = 0
+        if (
+            getattr(self, "shift_loss_targets", False)
+            and valid_tokens.size(-1) == loss.size(-1) + 1
+        ):
+            valid_tokens = valid_tokens[:, 1:]
+
+        nlls = (loss * valid_tokens).sum()
+        num_tokens = valid_tokens.sum()
+        token_nll = nlls / num_tokens
+
+        return trainer_base.Loss(loss=token_nll, nlls=nlls, num_tokens=num_tokens)
+
+    def nll(
+        self,
+        input_tokens,
+        current_accumulation_step=None,
+        train_mode=False,
+        valid_tokens=None,
+    ):
         t = self._sample_t(input_tokens.shape[0])
         z_t = self.hybrid_noise.sample_zt(input_tokens, t)
 
@@ -345,7 +375,10 @@ class GIDD(trainer_base.TrainerBase):
         sigma = self._process_sigma(sigma)
         logits = self.backbone(z_t, sigma)
 
-        attention_mask = torch.ones_like(input_tokens, dtype=logits.dtype)
+        if valid_tokens is None:
+            attention_mask = torch.ones_like(input_tokens, dtype=logits.dtype)
+        else:
+            attention_mask = valid_tokens.to(device=input_tokens.device, dtype=logits.dtype)
 
         # Use 'none' reduction to return per-token loss [batch, seq_len]
         # TrainerObjectiveMixin._loss() will then do the tokenmean reduction

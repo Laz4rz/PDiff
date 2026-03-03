@@ -250,9 +250,10 @@ class TrainerBase(L.LightningModule):
 
     def training_step(self, batch, batch_idx):
         current_accumulation_step = batch_idx % self.trainer.accumulate_grad_batches
+        valid_tokens = batch.get("loss_mask", batch["attention_mask"])
         losses = self._loss(
             batch["input_ids"],
-            batch["attention_mask"],
+            valid_tokens,
             current_accumulation_step,
             train_mode=True,
         )
@@ -290,7 +291,8 @@ class TrainerBase(L.LightningModule):
         assert self.metrics.valid_nlls.nll.weight == 0
 
     def validation_step(self, batch, batch_idx):
-        losses = self._loss(batch["input_ids"], batch["attention_mask"])
+        valid_tokens = batch.get("loss_mask", batch["attention_mask"])
+        losses = self._loss(batch["input_ids"], valid_tokens)
         self.metrics.update_valid(losses.nlls, losses.num_tokens)
         return losses.loss
 
