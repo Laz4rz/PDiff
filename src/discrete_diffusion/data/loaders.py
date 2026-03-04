@@ -33,6 +33,7 @@ from .tokenizers import SyntheticTokenizer, Text8Tokenizer
 from .flex_chunking import chunk_documents
 
 LOGGER = utils.get_logger(__name__)
+LOAD_FROM_CACHE = False
 
 __all__ = [
     "get_tokenizer",
@@ -158,7 +159,7 @@ def get_dataset(
         filename = f"{dataset_name}_{mode}_bs{block_size}_unwrapped{chunk_tag}{eos_tag}{min_len_tag}.dat"
     _path = os.path.join(cache_dir, filename)
 
-    if utils.fsspec_exists(_path):
+    if utils.fsspec_exists(_path) and LOAD_FROM_CACHE:
         LOGGER.info("Loading data from: %s", _path)
         return datasets.load_from_disk(_path).with_format("torch")
     LOGGER.info("Generating new data at: %s", _path)
@@ -410,7 +411,7 @@ def get_dataset(
         map_kwargs["remove_columns"] = ["text"]
     if not streaming:
         map_kwargs.update(
-            num_proc=num_proc, load_from_cache_file=True, desc="Tokenizing"
+            num_proc=num_proc, load_from_cache_file=LOAD_FROM_CACHE, desc="Tokenizing"
         )
     tokenized_dataset = data.map(preprocess_and_tokenize, **map_kwargs)
     if dataset_name == "ptb":
@@ -435,7 +436,7 @@ def get_dataset(
         tokenized_dataset = tokenized_dataset.filter(
             _has_min_length,
             num_proc=num_proc,
-            load_from_cache_file=True,
+            load_from_cache_file=LOAD_FROM_CACHE,
             desc="Filtering min length",
         )
 
@@ -458,7 +459,7 @@ def get_dataset(
             group_texts,
             batched=True,
             num_proc=num_proc,
-            load_from_cache_file=True,
+            load_from_cache_file=LOAD_FROM_CACHE,
             desc="Grouping",
         )
         chunked_dataset.save_to_disk(_path)

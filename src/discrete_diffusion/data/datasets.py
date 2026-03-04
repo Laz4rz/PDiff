@@ -281,7 +281,11 @@ def get_text8_dataset(cache_dir, max_seq_length=256, drop_last=True, crop_train=
     return dataset
 
 
-def generate_prefix_dataset(repeat_factor: int = 512) -> datasets.DatasetDict:
+def generate_prefix_dataset(samples: int|None = 2048) -> datasets.DatasetDict:
+    """
+        if samples is None, generates a single repetition dataset
+        otherwise repeats the prompts to reach the desired number of samples
+    """
     prefixes = [
         "The capital of France is:",
         "The capital of Germany is:",
@@ -334,10 +338,14 @@ def generate_prefix_dataset(repeat_factor: int = 512) -> datasets.DatasetDict:
         "kitten",
         "triangle",
     ]
-    if repeat_factor < 1:
-        raise ValueError("prefix repeat_factor must be >= 1")
-    prefixes = prefixes[:1]
-    completions = completions[:1]
+    prefixes = prefixes[:]
+    completions = completions[:]
+    if samples is None:
+        repeat_factor = 1
+    else:
+        repeat_factor = samples // len(prefixes)
+        if repeat_factor < 1:
+            raise ValueError("Not enough samples to generate the desired number of repetitions")
     prefixes = prefixes * repeat_factor
     completions = completions * repeat_factor
     return datasets.DatasetDict(
