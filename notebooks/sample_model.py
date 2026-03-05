@@ -51,18 +51,44 @@ def load_model_from_run(run_dir: Path, ckpt_type: Literal["best", "last"] = "bes
     return model, tokenizer, ckpt_path, ckpt_cfg, hydra_cfg
 
 
-NUM_SAMPLES = 4
+NUM_SAMPLES = 24
 NUM_STEPS = None  # use model default
 # RUN_DIR = ROOT / "outputs/roneneldan/TinyStories/2026.02.05/194344"
 # RUN_DIR = ROOT / "outputs/roneneldan/TinyStories/2026.02.05/194409"
-RUN_DIR = ROOT / "outputs/prefix/2026.03.03/222410"
+# RUN_DIR = ROOT / "outputs/prefix/2026.03.04/210842"
+RUN_DIR = ROOT / "outputs/prefix/2026.03.05/144345"
 # Set prompts to enable prefix-conditioned sampling (None keeps unconditional sampling).
 PREFIX_PROMPTS: list[str] | None = None
-# PREFIX_PROMPTS = ["The capital of Germany is:", "The capital of France is:", "The capital of Italy is:", "The capital of Spain is:"]
-PREFIX_PROMPTS = ["The capital of France is:"]
+PREFIX_PROMPTS = [
+    "The capital of France is:",
+    "The capital of Germany is:",
+    "The capital of Italy is:",
+    "The capital of Spain is:",
+    "The capital of Japan is:",
+    "The capital of Canada is:",
+    "The capital of Australia is:",
+    "2 + 2 =",
+    "5 * 6 =",
+    "9 - 4 =",
+    "The opposite of hot is:",
+    "The opposite of up is:",
+    "The color of the sky on a clear day is:",
+    "The first day of the week in the ISO standard is:",
+    "The largest planet in our solar system is:",
+    "Water freezes at 0 degrees:",
+    "The chemical symbol for gold is:",
+    "The language mostly spoken in Brazil is:",
+    "The author of '1984' is:",
+    "The square root of 81 is:",
+    "The next letter after C is:",
+    "The past tense of 'go' is:",
+    "A baby cat is called a:",
+    "A shape with three sides is a:",
+]
+# PREFIX_PROMPTS = ["The capital of France is:"]
 SHOW_STEPS = True
 STEP_EVERY = 64
-STEP_MAX_SAMPLES = 2
+STEP_MAX_SAMPLES = 24
 SKIP_SPECIAL_TOKENS = False
 EPS = None  # set to a float to override (e.g., 1e-5)
 WRAP_WIDTH = 100

@@ -32,10 +32,10 @@ uv run python -u -m discrete_diffusion \
   strategy=single-device \
   trainer.deterministic=true \
   trainer.num_nodes=1 trainer.devices=1 \
-  trainer.max_epochs=200 \
-  loader.global_batch_size=128 \
-  loader.batch_size=128 \
-  loader.eval_batch_size=128 \
+  trainer.max_epochs=100 \
+  loader.global_batch_size=256 \
+  loader.batch_size=256 \
+  loader.eval_batch_size=256 \
   trainer.log_every_n_steps=1 \
   trainer.val_check_interval=250 \
   trainer.limit_train_batches=1.0 \

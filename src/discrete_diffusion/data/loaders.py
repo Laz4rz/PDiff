@@ -29,7 +29,7 @@ from .processing import (
     scientific_papers_detokenizer,
     wt_detokenizer,
 )
-from .tokenizers import SyntheticTokenizer, Text8Tokenizer
+from .tokenizers import AsciiCharTokenizer, SyntheticTokenizer, Text8Tokenizer
 from .flex_chunking import chunk_documents
 
 LOGGER = utils.get_logger(__name__)
@@ -470,6 +470,8 @@ def get_dataset(
 def get_tokenizer(config):
     if config.data.tokenizer_name_or_path == "text8":
         tokenizer = Text8Tokenizer()
+    elif config.data.tokenizer_name_or_path == "ascii-char":
+        tokenizer = AsciiCharTokenizer()
     elif config.data.tokenizer_name_or_path == "bert-base-uncased":
         tokenizer = transformers.BertTokenizer.from_pretrained("bert-base-uncased")
     elif config.data.tokenizer_name_or_path == "synthetic":

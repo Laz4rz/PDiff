@@ -1,6 +1,6 @@
 train: prefix
 valid: prefix
-tokenizer_name_or_path: gpt2
+tokenizer_name_or_path: ascii-char
 cache_dir: ${scratch_dir}/prefix
 wrap: False
 chunking: none

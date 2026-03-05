@@ -19,10 +19,11 @@ from .processing import (
     scientific_papers_detokenizer,
     wt_detokenizer,
 )
-from .tokenizers import SyntheticTokenizer, Text8Tokenizer
+from .tokenizers import AsciiCharTokenizer, SyntheticTokenizer, Text8Tokenizer
 
 __all__ = [
     "Text8Tokenizer",
+    "AsciiCharTokenizer",
     "SyntheticTokenizer",
     "generate_synthetic_dataset",
     "get_lambada_test_dataset",
