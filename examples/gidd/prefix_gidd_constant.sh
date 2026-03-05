@@ -54,4 +54,4 @@ uv run python -u -m discrete_diffusion \
   eval.generate_samples=false \
   wandb.save_dir="${WANDB_DIR}" \
   wandb.name="tiny-gidd-prefix-constant-pi-${P_UNIFORM}" \
-  wandb.project=UNI-D2
+  wandb.project=prefix

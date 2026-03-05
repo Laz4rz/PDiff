@@ -3,6 +3,7 @@ from .datasets import (
     generate_synthetic_dataset,
     get_lambada_test_dataset,
     get_text8_dataset,
+    get_star_graph_dataset
 )
 from .datamodule import DiscreteDiffusionDataModule
 from .loaders import (
@@ -39,4 +40,5 @@ __all__ = [
     "get_dataset",
     "get_dataloaders",
     "DiscreteDiffusionDataModule",
+    "get_star_graph_dataset",
 ]

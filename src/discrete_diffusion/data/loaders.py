@@ -15,10 +15,10 @@ import transformers
 from .. import utils
 from .datasets import (
     generate_prefix_dataset,
-    generate_star_graph_dataset,
     generate_synthetic_dataset,
     get_lambada_test_dataset,
     get_text8_dataset,
+    get_star_graph_dataset,
 )
 from .processing import (
     _apply_detokenizer,
@@ -107,22 +107,6 @@ class DatasetConfig:
             )
 
         return validated
-
-
-STAR_GRAPH_DATASET_CONFIG = DatasetConfig(
-    {
-        "train_dataset_size": int,
-        "validation_dataset_size": int,
-        "context_window": int,
-        "nvertices": int,
-        "ndistractors": int,
-        "max_attention": int,
-        "instruction": str,
-        "train_seed": int,
-        "validation_seed": int,
-    },
-    dataset_name="star_graph",
-)
 
 
 def get_dataset(
@@ -251,18 +235,7 @@ def get_dataset(
             raise ValueError(
                 "star_graph dataset generation does not support streaming."
             )
-        star_graph_config = STAR_GRAPH_DATASET_CONFIG.init(dataset_config)
-        dataset = generate_star_graph_dataset(
-            train_dataset_size=star_graph_config["train_dataset_size"],
-            validation_dataset_size=star_graph_config["validation_dataset_size"],
-            context_window=star_graph_config["context_window"],
-            nvertices=star_graph_config["nvertices"],
-            ndistractors=star_graph_config["ndistractors"],
-            max_attention=star_graph_config["max_attention"],
-            instruction=star_graph_config["instruction"],
-            train_seed=star_graph_config["train_seed"],
-            validation_seed=star_graph_config["validation_seed"],
-        )
+        dataset = get_star_graph_dataset()
     elif dataset_name == "prefix":
         if streaming:
             raise ValueError("prefix dataset generation does not support streaming.")
@@ -335,9 +308,10 @@ def get_dataset(
             for p_ids, c_ids in zip(prefixes["input_ids"], completions["input_ids"]):
                 p_ids = list(p_ids)
                 c_ids = list(c_ids)
-                if dataset_name == "prefix":
+                if dataset_name in {"prefix", "star_graph"} and BOS is not None:
                     if not p_ids or p_ids[0] != BOS:
                         p_ids = [BOS] + p_ids
+                if dataset_name in {"prefix", "star_graph"} and EOS is not None:
                     if not c_ids or c_ids[-1] != EOS:
                         c_ids = c_ids + [EOS]
 

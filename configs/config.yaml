@@ -85,7 +85,7 @@ trainer:
   deterministic: false
 
 wandb:
-  project: UNI-D2
+  project: ${data.train}
   save_dir: null
   notes: null
   group: null
