@@ -28,6 +28,8 @@ device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 torch.set_float32_matmul_precision("high")
 torch.set_grad_enabled(False)
 
+WRAP_WIDTH = 100
+
 
 def load_model_from_run(run_dir: Path, ckpt_type: Literal["best", "last"] = "best"):
     ckpt_path = (
@@ -49,49 +51,6 @@ def load_model_from_run(run_dir: Path, ckpt_type: Literal["best", "last"] = "bes
     model.to(device)
     model.eval()
     return model, tokenizer, ckpt_path, ckpt_cfg, hydra_cfg
-
-
-NUM_SAMPLES = 24
-NUM_STEPS = None  # use model default
-# RUN_DIR = ROOT / "outputs/roneneldan/TinyStories/2026.02.05/194344"
-# RUN_DIR = ROOT / "outputs/roneneldan/TinyStories/2026.02.05/194409"
-# RUN_DIR = ROOT / "outputs/prefix/2026.03.04/210842"
-RUN_DIR = ROOT / "outputs/prefix/2026.03.05/144345"
-# Set prompts to enable prefix-conditioned sampling (None keeps unconditional sampling).
-PREFIX_PROMPTS: list[str] | None = None
-PREFIX_PROMPTS = [
-    "The capital of France is:",
-    "The capital of Germany is:",
-    "The capital of Italy is:",
-    "The capital of Spain is:",
-    "The capital of Japan is:",
-    "The capital of Canada is:",
-    "The capital of Australia is:",
-    "2 + 2 =",
-    "5 * 6 =",
-    "9 - 4 =",
-    "The opposite of hot is:",
-    "The opposite of up is:",
-    "The color of the sky on a clear day is:",
-    "The first day of the week in the ISO standard is:",
-    "The largest planet in our solar system is:",
-    "Water freezes at 0 degrees:",
-    "The chemical symbol for gold is:",
-    "The language mostly spoken in Brazil is:",
-    "The author of '1984' is:",
-    "The square root of 81 is:",
-    "The next letter after C is:",
-    "The past tense of 'go' is:",
-    "A baby cat is called a:",
-    "A shape with three sides is a:",
-]
-# PREFIX_PROMPTS = ["The capital of France is:"]
-SHOW_STEPS = True
-STEP_EVERY = 64
-STEP_MAX_SAMPLES = 24
-SKIP_SPECIAL_TOKENS = False
-EPS = None  # set to a float to override (e.g., 1e-5)
-WRAP_WIDTH = 100
 
 
 def _decode_step(
@@ -261,51 +220,76 @@ def generate_with_steps(
     return z_t, prefix_prompt_texts, prefix_token_ids
 
 
-model, tokenizer, ckpt_path, ckpt_cfg, hydra_cfg = load_model_from_run(RUN_DIR)
-print("Checkpoint:", ckpt_path)
-print("Algo:", ckpt_cfg.algo.name)
-print("Loss Type:", ckpt_cfg.algo.loss_type)
-print("P_u=", ckpt_cfg.algo.p_uniform)
+def print_run_metadata(ckpt_path: Path, ckpt_cfg) -> None:
+    print("Checkpoint:", ckpt_path)
+    print("Algo:", ckpt_cfg.algo.name)
+    print("Loss Type:", ckpt_cfg.algo.loss_type)
+    print("P_u=", ckpt_cfg.algo.p_uniform)
 
-if SHOW_STEPS:
-    samples, prefix_prompt_texts, prefix_token_ids = generate_with_steps(
-        model,
-        tokenizer,
-        num_samples=NUM_SAMPLES,
-        num_steps=NUM_STEPS,
-        eps=EPS,
-        step_every=STEP_EVERY,
-        max_samples=STEP_MAX_SAMPLES,
-        skip_special_tokens=SKIP_SPECIAL_TOKENS,
-        show_steps=True,
-        prefix_prompts=PREFIX_PROMPTS,
-    )
-else:
-    if PREFIX_PROMPTS is None:
-        samples = model.generate_samples(
-            num_samples=NUM_SAMPLES, num_steps=NUM_STEPS, eps=EPS
-        )
-        prefix_prompt_texts, prefix_token_ids = None, None
-    else:
-        samples, prefix_prompt_texts, prefix_token_ids = generate_with_steps(
+
+@torch.no_grad()
+def run_sampling(
+    model,
+    tokenizer,
+    *,
+    num_samples: int,
+    num_steps: int | None = None,
+    eps: float | None = None,
+    step_every: int = 64,
+    max_samples: int = 24,
+    skip_special_tokens: bool = False,
+    show_steps: bool = True,
+    prefix_prompts: Sequence[str] | None = None,
+):
+    if show_steps:
+        return generate_with_steps(
             model,
             tokenizer,
-            num_samples=NUM_SAMPLES,
-            num_steps=NUM_STEPS,
-            eps=EPS,
-            step_every=STEP_EVERY,
-            max_samples=STEP_MAX_SAMPLES,
-            skip_special_tokens=SKIP_SPECIAL_TOKENS,
-            show_steps=False,
-            prefix_prompts=PREFIX_PROMPTS,
+            num_samples=num_samples,
+            num_steps=num_steps,
+            eps=eps,
+            step_every=step_every,
+            max_samples=max_samples,
+            skip_special_tokens=skip_special_tokens,
+            show_steps=True,
+            prefix_prompts=prefix_prompts,
         )
 
-if prefix_token_ids is not None:
-    _print_prefix_completions(
-        samples, tokenizer, prefix_prompt_texts, prefix_token_ids
+    if prefix_prompts is None:
+        samples = model.generate_samples(num_samples=num_samples, num_steps=num_steps, eps=eps)
+        return samples, None, None
+
+    return generate_with_steps(
+        model,
+        tokenizer,
+        num_samples=num_samples,
+        num_steps=num_steps,
+        eps=eps,
+        step_every=step_every,
+        max_samples=max_samples,
+        skip_special_tokens=skip_special_tokens,
+        show_steps=False,
+        prefix_prompts=prefix_prompts,
     )
-else:
-    texts = tokenizer.batch_decode(samples.detach().cpu(), skip_special_tokens=True)
+
+
+def print_samples(
+    samples,
+    tokenizer,
+    *,
+    prefix_prompt_texts: Sequence[str] | None = None,
+    prefix_token_ids: Sequence[Sequence[int]] | None = None,
+    skip_special_tokens: bool = True,
+) -> None:
+    if prefix_token_ids is not None and prefix_prompt_texts is not None:
+        _print_prefix_completions(
+            samples, tokenizer, prefix_prompt_texts, prefix_token_ids
+        )
+        return
+
+    texts = tokenizer.batch_decode(
+        samples.detach().cpu(), skip_special_tokens=skip_special_tokens
+    )
     for i, text in enumerate(texts):
         print(f"--- sample {i} ---")
         print(text)
