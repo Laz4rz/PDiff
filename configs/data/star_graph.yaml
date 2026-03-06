@@ -12,4 +12,7 @@ insert_valid_special: True
 min_length: 0
 train_min_length: 0
 valid_min_length: 0
-dataset_config: {}
+dataset_config:
+  data_dir: null
+  train_file: null
+  validation_file: null

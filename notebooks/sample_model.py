@@ -124,7 +124,13 @@ def _apply_prefix_constraints(z_t: torch.Tensor, prefix_token_ids: Sequence[Sequ
     return z_t
 
 
-def _print_prefix_completions(samples, tokenizer, prefix_prompts, prefix_token_ids):
+def _print_prefix_completions(
+    samples,
+    tokenizer,
+    prefix_prompts,
+    prefix_token_ids,
+    expected_completions: Sequence[str] | None = None,
+):
     eos_id = tokenizer.eos_token_id
     samples_cpu = samples.detach().cpu()
     for i, (prompt, prefix_ids) in enumerate(zip(prefix_prompts, prefix_token_ids)):
@@ -136,6 +142,8 @@ def _print_prefix_completions(samples, tokenizer, prefix_prompts, prefix_token_i
         print(f"--- sample {i} ---")
         print(f"prefix: {prompt}")
         print(f"completion: {completion}")
+        if expected_completions is not None:
+            print(f"expected: {expected_completions[i]}")
         print()
 
 
@@ -279,11 +287,20 @@ def print_samples(
     *,
     prefix_prompt_texts: Sequence[str] | None = None,
     prefix_token_ids: Sequence[Sequence[int]] | None = None,
+    expected_completions: Sequence[str] | None = None,
     skip_special_tokens: bool = True,
 ) -> None:
     if prefix_token_ids is not None and prefix_prompt_texts is not None:
+        if expected_completions is not None:
+            expected_completions = _expand_prefix_prompts(
+                expected_completions, len(prefix_prompt_texts)
+            )
         _print_prefix_completions(
-            samples, tokenizer, prefix_prompt_texts, prefix_token_ids
+            samples,
+            tokenizer,
+            prefix_prompt_texts,
+            prefix_token_ids,
+            expected_completions=expected_completions,
         )
         return
 

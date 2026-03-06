@@ -8,6 +8,8 @@ export PYTHONPATH="${REPO_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
 
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 export P_UNIFORM="${P_UNIFORM:-1.0}"
+export STAR_TRAIN_FILE="${STAR_TRAIN_FILE:-deg_3_path_3_nodes_50_reverse_False_200000_train.txt}"
+export STAR_VALIDATION_FILE="${STAR_VALIDATION_FILE:-deg_3_path_3_nodes_50_reverse_False_20000_test.txt}"
 
 export WANDB_MODE="${WANDB_MODE:-online}"
 export WANDB_DIR="${REPO_ROOT}/wandb_logs"
@@ -20,10 +22,14 @@ echo "PYTHONPATH=${PYTHONPATH}"
 echo "WANDB_MODE=${WANDB_MODE}"
 echo "WANDB_DIR=${WANDB_DIR}"
 echo "P_UNIFORM=${P_UNIFORM}"
+echo "STAR_TRAIN_FILE=${STAR_TRAIN_FILE}"
+echo "STAR_VALIDATION_FILE=${STAR_VALIDATION_FILE}"
 
 uv run python -u -m discrete_diffusion \
   data=star_graph \
   data.tokenizer_name_or_path=ascii-char \
+  data.dataset_config.train_file="${STAR_TRAIN_FILE}" \
+  data.dataset_config.validation_file="${STAR_VALIDATION_FILE}" \
   model=tiny \
   algo=gidd \
   algo.loss_type=gidd_constant_pi \
@@ -33,7 +39,7 @@ uv run python -u -m discrete_diffusion \
   strategy=single-device \
   trainer.deterministic=true \
   trainer.num_nodes=1 trainer.devices=1 \
-  trainer.max_epochs=5 \
+  trainer.max_epochs=50 \
   loader.global_batch_size=256 \
   loader.batch_size=256 \
   loader.eval_batch_size=256 \
