@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 import json
 import os
 from pathlib import Path
@@ -28,10 +29,25 @@ __all__ = [
     "get_text8_dataset",
 ]
 
-def get_star_graph_dataset():
-    data_dir = Path(__file__).resolve().parents[3] / "data" / "star"
-    train_path = data_dir / "deg_2_path_2_nodes_50_train_200000.txt"
-    validation_path = data_dir / "deg_2_path_2_nodes_50_test_20000.txt"
+def get_star_graph_dataset(dataset_config: Mapping[str, object] | None = None):
+    repo_root = Path(__file__).resolve().parents[3]
+    default_data_dir = repo_root / "data" / "star"
+    config = dict(dataset_config or {})
+    data_dir = Path(str(config.get("data_dir") or default_data_dir))
+    if not data_dir.is_absolute():
+        data_dir = repo_root / data_dir
+
+    train_path = Path(
+        str(config.get("train_file") or "deg_2_path_2_nodes_50_train_200000.txt")
+    )
+    if not train_path.is_absolute():
+        train_path = data_dir / train_path
+
+    validation_path = Path(
+        str(config.get("validation_file") or "deg_2_path_2_nodes_50_test_20000.txt")
+    )
+    if not validation_path.is_absolute():
+        validation_path = data_dir / validation_path
 
     def _read_star_graphs(path: Path) -> datasets.Dataset:
         if not path.exists():

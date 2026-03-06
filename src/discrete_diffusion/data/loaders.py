@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import functools
 import os
-from collections.abc import Mapping
-from typing import Any, Optional
+from typing import Optional
 
 import datasets
 import tokenizers
@@ -42,73 +41,6 @@ __all__ = [
 ]
 
 
-class DatasetConfig:
-    def __init__(
-        self,
-        key_type_dict: dict[str, type],
-        *,
-        dataset_name: str,
-        config_name: str = "data.dataset_config",
-    ):
-        self.key_type_dict = dict(key_type_dict)
-        self.keys = tuple(self.key_type_dict.keys())
-        self.dataset_name = dataset_name
-        self.config_name = config_name
-        self.config: dict[str, Any] = {}
-
-    def init(self, config_dict: Optional[Mapping[str, Any]]) -> dict[str, Any]:
-        self.config = self.validate(config_dict)
-        return self.config
-
-    def validate(self, config_dict: Optional[Mapping[str, Any]]) -> dict[str, Any]:
-        if config_dict is None:
-            raise KeyError(
-                f"Dataset '{self.dataset_name}' requires "
-                f"'{self.config_name}' with explicit keys."
-            )
-        if not isinstance(config_dict, Mapping):
-            raise TypeError(
-                f"Dataset '{self.dataset_name}' expected '{self.config_name}' "
-                f"to be a mapping, got {type(config_dict).__name__}."
-            )
-
-        config = dict(config_dict)
-        missing = [key for key in self.keys if key not in config]
-        unexpected = [key for key in config.keys() if key not in self.key_type_dict]
-        if missing or unexpected:
-            details = []
-            if missing:
-                details.append(f"missing keys: {missing}")
-            if unexpected:
-                details.append(f"unexpected keys: {unexpected}")
-            raise KeyError(
-                f"Dataset '{self.dataset_name}' has invalid '{self.config_name}' "
-                f"({'; '.join(details)})."
-            )
-
-        validated: dict[str, Any] = {}
-        type_errors = []
-        for key, expected_type in self.key_type_dict.items():
-            value = config[key]
-            if expected_type is int:
-                is_valid = isinstance(value, int) and not isinstance(value, bool)
-            else:
-                is_valid = isinstance(value, expected_type)
-            if not is_valid:
-                type_errors.append(
-                    f"{key}={value!r} (expected {expected_type.__name__})"
-                )
-                continue
-            validated[key] = value
-        if type_errors:
-            raise TypeError(
-                f"Dataset '{self.dataset_name}' has invalid '{self.config_name}' "
-                f"value types: {type_errors}"
-            )
-
-        return validated
-
-
 def get_dataset(
     dataset_name,
     tokenizer,
@@ -140,7 +72,10 @@ def get_dataset(
     if wrap:
         filename = f"{dataset_name}_{mode}_bs{block_size}_wrapped{eos_tag}.dat"
     else:
-        filename = f"{dataset_name}_{mode}_bs{block_size}_unwrapped{chunk_tag}{eos_tag}{min_len_tag}.dat"
+        filename = (
+            f"{dataset_name}_{mode}_bs{block_size}_unwrapped"
+            f"{chunk_tag}{eos_tag}{min_len_tag}.dat"
+        )
     _path = os.path.join(cache_dir, filename)
 
     if utils.fsspec_exists(_path) and LOAD_FROM_CACHE:
@@ -235,7 +170,7 @@ def get_dataset(
             raise ValueError(
                 "star_graph dataset generation does not support streaming."
             )
-        dataset = get_star_graph_dataset()
+        dataset = get_star_graph_dataset(dataset_config=dataset_config)
     elif dataset_name == "prefix":
         if streaming:
             raise ValueError("prefix dataset generation does not support streaming.")
