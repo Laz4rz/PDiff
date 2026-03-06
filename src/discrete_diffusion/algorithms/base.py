@@ -35,6 +35,10 @@ class Loss:
     loss: torch.FloatTensor
     nlls: torch.FloatTensor
     num_tokens: torch.FloatTensor
+    correct_tokens: torch.FloatTensor | None = None
+    num_accuracy_tokens: torch.FloatTensor | None = None
+    correct_samples: torch.FloatTensor | None = None
+    num_accuracy_samples: torch.FloatTensor | None = None
 
 
 class TrainerBase(L.LightningModule):

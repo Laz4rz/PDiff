@@ -67,8 +67,6 @@ def get_star_graph_dataset(dataset_config: Mapping[str, object] | None = None):
             {
                 "prefixes": prefixes,
                 "completions": completions,
-                "prefix": prefixes,
-                "target": completions,
             }
         )
 

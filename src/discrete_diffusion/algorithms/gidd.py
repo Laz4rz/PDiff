@@ -334,29 +334,172 @@ class GIDD(trainer_base.TrainerBase):
         logits[..., self.mask_id] = self.neg_infinity
         return logits
 
-    def _loss(self, x0, valid_tokens, current_accumulation_step=None, train_mode=False):
+    def _loss(
+        self,
+        x0,
+        valid_tokens,
+        current_accumulation_step=None,
+        train_mode=False,
+        accuracy_tokens=None,
+    ):
         input_tokens, valid_tokens = self._process_model_input(x0, valid_tokens)
-        loss = self.nll(
+        loss, pred_tokens = self.nll(
             input_tokens,
             current_accumulation_step,
             train_mode,
             valid_tokens=valid_tokens,
+            return_predictions=True,
         )
         assert loss.ndim == 2
         if self.ignore_bos:
             loss[:, 0] = 0
             valid_tokens[:, 0] = 0
-        if (
-            getattr(self, "shift_loss_targets", False)
-            and valid_tokens.size(-1) == loss.size(-1) + 1
+        expected_shape = loss.shape
+        if not (
+            valid_tokens.shape == expected_shape
+            and input_tokens.shape == expected_shape
+            and pred_tokens.shape == expected_shape
         ):
-            valid_tokens = valid_tokens[:, 1:]
+            raise ValueError(
+                "GIDD shape mismatch: "
+                f"loss={loss.shape}, valid={valid_tokens.shape}, "
+                f"input={input_tokens.shape}, pred={pred_tokens.shape}"
+            )
+        if accuracy_tokens is not None and accuracy_tokens.shape != expected_shape:
+            raise ValueError(
+                "GIDD shape mismatch: "
+                f"loss={loss.shape}, accuracy={accuracy_tokens.shape}"
+            )
 
         nlls = (loss * valid_tokens).sum()
         num_tokens = valid_tokens.sum()
         token_nll = nlls / num_tokens
 
-        return trainer_base.Loss(loss=token_nll, nlls=nlls, num_tokens=num_tokens)
+        if accuracy_tokens is None:
+            correct_tokens = torch.zeros((), device=loss.device, dtype=loss.dtype)
+            num_accuracy_tokens = torch.zeros((), device=loss.device, dtype=loss.dtype)
+            correct_samples = torch.zeros((), device=loss.device, dtype=loss.dtype)
+            num_accuracy_samples = torch.zeros((), device=loss.device, dtype=loss.dtype)
+        else:
+            accuracy_mask = accuracy_tokens.to(dtype=torch.bool)
+            if self.ignore_bos:
+                accuracy_mask = accuracy_mask.clone()
+                accuracy_mask[:, 0] = False
+            token_correct = pred_tokens == input_tokens
+            correct_tokens = (token_correct & accuracy_mask).sum().to(dtype=loss.dtype)
+            num_accuracy_tokens = accuracy_mask.sum().to(dtype=loss.dtype)
+            has_accuracy = accuracy_mask.any(dim=-1)
+            sample_correct = ((~accuracy_mask) | token_correct).all(dim=-1) & has_accuracy
+            correct_samples = sample_correct.sum().to(dtype=loss.dtype)
+            num_accuracy_samples = has_accuracy.sum().to(dtype=loss.dtype)
+        return trainer_base.Loss(
+            loss=token_nll,
+            nlls=nlls,
+            num_tokens=num_tokens,
+            correct_tokens=correct_tokens,
+            num_accuracy_tokens=num_accuracy_tokens,
+            correct_samples=correct_samples,
+            num_accuracy_samples=num_accuracy_samples,
+        )
+
+    def training_step(self, batch, batch_idx):
+        current_accumulation_step = batch_idx % self.trainer.accumulate_grad_batches
+        valid_tokens = batch.get("loss_mask", batch["attention_mask"])
+        accuracy_tokens = batch.get("accuracy_mask", None)
+        losses = self._loss(
+            batch["input_ids"],
+            valid_tokens,
+            current_accumulation_step,
+            train_mode=True,
+            accuracy_tokens=accuracy_tokens,
+        )
+        self.metrics.update_train(
+            losses.nlls,
+            losses.num_tokens,
+            losses.correct_tokens,
+            losses.num_accuracy_tokens,
+            losses.correct_samples,
+            losses.num_accuracy_samples,
+        )
+        self.log(
+            name="trainer/loss",
+            value=losses.loss,
+            on_step=True,
+            on_epoch=False,
+            sync_dist=True,
+            prog_bar=True,
+        )
+        return losses.loss
+
+    def on_train_epoch_end(self):
+        super().on_train_epoch_end()
+        train_acc_token = (
+            self.metrics.train_acc_token.compute()
+            if getattr(self.metrics.train_acc_token, "weight", 0) > 0
+            else torch.tensor(0.0, device=self.device)
+        )
+        train_acc_sample = (
+            self.metrics.train_acc_sample.compute()
+            if getattr(self.metrics.train_acc_sample, "weight", 0) > 0
+            else torch.tensor(0.0, device=self.device)
+        )
+        self.log(
+            name="train/acc_token",
+            value=train_acc_token,
+            on_step=False,
+            on_epoch=True,
+            sync_dist=True,
+        )
+        self.log(
+            name="train/acc_sample",
+            value=train_acc_sample,
+            on_step=False,
+            on_epoch=True,
+            sync_dist=True,
+        )
+
+    def validation_step(self, batch, batch_idx):
+        valid_tokens = batch.get("loss_mask", batch["attention_mask"])
+        accuracy_tokens = batch.get("accuracy_mask", None)
+        losses = self._loss(
+            batch["input_ids"], valid_tokens, accuracy_tokens=accuracy_tokens
+        )
+        self.metrics.update_valid(
+            losses.nlls,
+            losses.num_tokens,
+            losses.correct_tokens,
+            losses.num_accuracy_tokens,
+            losses.correct_samples,
+            losses.num_accuracy_samples,
+        )
+        return losses.loss
+
+    def on_validation_epoch_end(self):
+        super().on_validation_epoch_end()
+        valid_acc_token = (
+            self.metrics.valid_acc_token.compute()
+            if getattr(self.metrics.valid_acc_token, "weight", 0) > 0
+            else torch.tensor(0.0, device=self.device)
+        )
+        valid_acc_sample = (
+            self.metrics.valid_acc_sample.compute()
+            if getattr(self.metrics.valid_acc_sample, "weight", 0) > 0
+            else torch.tensor(0.0, device=self.device)
+        )
+        self.log(
+            name="val/acc_token",
+            value=valid_acc_token,
+            on_step=False,
+            on_epoch=True,
+            sync_dist=True,
+        )
+        self.log(
+            name="val/acc_sample",
+            value=valid_acc_sample,
+            on_step=False,
+            on_epoch=True,
+            sync_dist=True,
+        )
 
     def nll(
         self,
@@ -364,16 +507,21 @@ class GIDD(trainer_base.TrainerBase):
         current_accumulation_step=None,
         train_mode=False,
         valid_tokens=None,
+        return_predictions=False,
     ):
         t = self._sample_t(input_tokens.shape[0])
         z_t = self.hybrid_noise.sample_zt(input_tokens, t)
 
         alpha_t = self._loglinear.alpha_t(t)
-        dalpha_t = self._loglinear.alpha_prime_t(t)
         sigma = self._sigma_from_alphat(alpha_t.unsqueeze(-1))
 
         sigma = self._process_sigma(sigma)
         logits = self.backbone(z_t, sigma)
+        pred_tokens = None
+        if return_predictions:
+            with torch.no_grad():
+                pred_logits = self._mask_logits_forbidden_classes(logits)
+                pred_tokens = pred_logits.argmax(dim=-1)
 
         if valid_tokens is None:
             attention_mask = torch.ones_like(input_tokens, dtype=logits.dtype)
@@ -382,7 +530,7 @@ class GIDD(trainer_base.TrainerBase):
 
         # Use 'none' reduction to return per-token loss [batch, seq_len]
         # TrainerObjectiveMixin._loss() will then do the tokenmean reduction
-        loss, elbo, metrics = self.loss_fn(
+        loss, _, metrics = self.loss_fn(
             logits=logits,
             input_ids=input_tokens,
             attention_mask=attention_mask,
@@ -417,6 +565,8 @@ class GIDD(trainer_base.TrainerBase):
                 sync_dist=True,
             )
 
+        if return_predictions:
+            return loss, pred_tokens
         return loss
 
 
