@@ -105,7 +105,12 @@ class GIDDSampler(Sampler):
             q_st = (1 - is_small) * q_st
             q_st = q_st / q_st.sum(-1, keepdim=True)
 
-        return sample_categorical(q_st)
+        sampled = sample_categorical(q_st)
+        if not supports_mask:
+            # No-mask branch samples in a compressed vocab with mask removed.
+            # Remap sampled ids back to original tokenizer ids.
+            sampled = sampled + (sampled >= model.mask_id).to(sampled.dtype)
+        return sampled
 
     @torch.no_grad()
     def generate(self, model, *, num_samples, num_steps, eps, inject_bos):
