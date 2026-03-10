@@ -51,6 +51,11 @@ eval:
   checkpoint_path: ''  # Used to evaluate a checkpoint after training.
   disable_ema: False
   compute_perplexity_on_sanity: False
+  compute_generation_accuracy: True
+  generation_accuracy_max_batches: 1
+  generation_accuracy_steps: null
+  generation_accuracy_eps: null
+  run_validation_before_train: false
   generate_samples: True
   run_validation_at_train_end: true
   train_end_validation_ckpt_path: last
