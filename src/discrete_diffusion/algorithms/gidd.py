@@ -308,6 +308,7 @@ class GIDD(trainer_base.TrainerBase):
             )
 
         self._loglinear = LogLinear()
+        self._val_gen_acc_batches_seen = 0
 
     def _process_model_input(self, x0, valid_tokens):
         return x0, valid_tokens
@@ -431,6 +432,10 @@ class GIDD(trainer_base.TrainerBase):
         )
         return losses.loss
 
+    def on_validation_epoch_start(self):
+        super().on_validation_epoch_start()
+        self._val_gen_acc_batches_seen = 0
+
     def on_train_epoch_end(self):
         super().on_train_epoch_end()
         train_acc_token = (
@@ -444,14 +449,14 @@ class GIDD(trainer_base.TrainerBase):
             else torch.tensor(0.0, device=self.device)
         )
         self.log(
-            name="train/acc_token",
+            name="train/denoise_acc_token",
             value=train_acc_token,
             on_step=False,
             on_epoch=True,
             sync_dist=True,
         )
         self.log(
-            name="train/acc_sample",
+            name="train/denoise_acc_sample",
             value=train_acc_sample,
             on_step=False,
             on_epoch=True,
@@ -472,6 +477,13 @@ class GIDD(trainer_base.TrainerBase):
             losses.correct_samples,
             losses.num_accuracy_samples,
         )
+        if self._should_compute_generation_accuracy(accuracy_tokens):
+            gen_metrics = self._compute_generation_accuracy(
+                batch["input_ids"], accuracy_tokens
+            )
+            if gen_metrics is not None:
+                self.metrics.update_valid_gen(*gen_metrics)
+                self._val_gen_acc_batches_seen += 1
         return losses.loss
 
     def on_validation_epoch_end(self):
@@ -487,18 +499,102 @@ class GIDD(trainer_base.TrainerBase):
             else torch.tensor(0.0, device=self.device)
         )
         self.log(
-            name="val/acc_token",
+            name="val/denoise_acc_token",
             value=valid_acc_token,
             on_step=False,
             on_epoch=True,
             sync_dist=True,
         )
         self.log(
-            name="val/acc_sample",
+            name="val/denoise_acc_sample",
             value=valid_acc_sample,
             on_step=False,
             on_epoch=True,
             sync_dist=True,
+        )
+        if getattr(self.metrics.valid_gen_acc_token, "weight", 0) > 0:
+            self.log(
+                name="val/gen_acc_token",
+                value=self.metrics.valid_gen_acc_token.compute(),
+                on_step=False,
+                on_epoch=True,
+                sync_dist=True,
+            )
+        if getattr(self.metrics.valid_gen_acc_sample, "weight", 0) > 0:
+            self.log(
+                name="val/gen_acc_sample",
+                value=self.metrics.valid_gen_acc_sample.compute(),
+                on_step=False,
+                on_epoch=True,
+                sync_dist=True,
+            )
+
+    def _should_compute_generation_accuracy(self, accuracy_tokens):
+        if accuracy_tokens is None:
+            return False
+        if self.trainer.sanity_checking:
+            return False
+        if not bool(getattr(self.config.eval, "compute_generation_accuracy", True)):
+            return False
+        raw_max_batches = getattr(self.config.eval, "generation_accuracy_max_batches", 1)
+        max_batches = 1 if raw_max_batches is None else int(raw_max_batches)
+        if max_batches <= 0:
+            return False
+        if self._val_gen_acc_batches_seen >= max_batches:
+            return False
+        sampler = self._create_sampler()
+        return sampler is not None
+
+    @torch.no_grad()
+    def _compute_generation_accuracy(self, input_tokens, accuracy_tokens):
+        accuracy_mask = accuracy_tokens.to(device=input_tokens.device, dtype=torch.bool)
+        if self.ignore_bos:
+            accuracy_mask = accuracy_mask.clone()
+            accuracy_mask[:, 0] = False
+        has_accuracy = accuracy_mask.any(dim=-1)
+        if not has_accuracy.any():
+            return None
+
+        num_steps = getattr(self.config.eval, "generation_accuracy_steps", None)
+        if num_steps is None:
+            num_steps = int(self.config.sampling.steps)
+        num_steps = int(num_steps)
+        if num_steps <= 0:
+            return None
+
+        eps = getattr(self.config.eval, "generation_accuracy_eps", None)
+        if eps is None:
+            eps = float(getattr(self.config.algo, "t_eps", 1e-5))
+        eps = float(eps)
+
+        sampler = self._create_sampler()
+        if sampler is None:
+            return None
+
+        bsz = input_tokens.shape[0]
+        timesteps = torch.linspace(1 - eps, eps, num_steps + 1, device=self.device)
+        z_t = self.hybrid_noise.sample_prior((bsz, self.num_tokens)).to(self.device)
+        inject_bos = getattr(self.config.sampling, "inject_bos", True)
+        if inject_bos:
+            z_t[:, 0] = self.tokenizer.bos_token_id
+
+        fixed_mask = ~accuracy_mask
+        z_t = torch.where(fixed_mask, input_tokens, z_t)
+        ones = torch.ones(bsz, device=self.device)
+        for i in range(num_steps):
+            t = timesteps[i] * ones
+            s = timesteps[i + 1] * ones
+            z_t = sampler.compute_posterior(self, z_t, t, s)
+            z_t = torch.where(fixed_mask, input_tokens, z_t)
+
+        token_correct = (z_t == input_tokens) & accuracy_mask
+        sample_correct = ((~accuracy_mask) | (z_t == input_tokens)).all(dim=-1) & has_accuracy
+
+        return (
+            token_correct.sum().to(dtype=torch.float32),
+            accuracy_mask.sum().to(dtype=torch.float32),
+            sample_correct.sum().to(dtype=torch.float32),
+            has_accuracy.sum().to(dtype=torch.float32),
         )
 
     def nll(

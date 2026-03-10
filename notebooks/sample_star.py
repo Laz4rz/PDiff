@@ -6,13 +6,11 @@ from sample_model import (
     run_sampling,
 )
 
-from star import star_graph
-
 from discrete_diffusion.data.datasets import get_star_graph_dataset
 
 NUM_SAMPLES = 24
 NUM_STEPS = None  # use model default
-RUN_DIR = ROOT / "outputs/star_graph/2026.03.05/233842"
+RUN_DIR = ROOT / "outputs/star_graph/2026.03.06/213118"
 SHOW_STEPS = True
 STEP_EVERY = 64
 STEP_MAX_SAMPLES = 24

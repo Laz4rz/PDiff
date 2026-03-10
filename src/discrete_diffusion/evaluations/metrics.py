@@ -84,6 +84,10 @@ class Metrics:
         self.valid_acc_token.set_dtype(torch.float64)
         self.valid_acc_sample = NLL()
         self.valid_acc_sample.set_dtype(torch.float64)
+        self.valid_gen_acc_token = NLL()
+        self.valid_gen_acc_token.set_dtype(torch.float64)
+        self.valid_gen_acc_sample = NLL()
+        self.valid_gen_acc_sample.set_dtype(torch.float64)
         self.valid_aux = BPD()
         # Keep sample entropy as a lightweight generative signal during training
         self.sample_entropy = torchmetrics.aggregation.MeanMetric()
@@ -98,6 +102,8 @@ class Metrics:
         self.valid_nlls = self.valid_nlls.to(*args, **kwargs)
         self.valid_acc_token = self.valid_acc_token.to(*args, **kwargs)
         self.valid_acc_sample = self.valid_acc_sample.to(*args, **kwargs)
+        self.valid_gen_acc_token = self.valid_gen_acc_token.to(*args, **kwargs)
+        self.valid_gen_acc_sample = self.valid_gen_acc_sample.to(*args, **kwargs)
         self.valid_aux = self.valid_aux.to(*args, **kwargs)
 
     def reset(self):
@@ -109,6 +115,8 @@ class Metrics:
         self.valid_nlls.reset()
         self.valid_acc_token.reset()
         self.valid_acc_sample.reset()
+        self.valid_gen_acc_token.reset()
+        self.valid_gen_acc_sample.reset()
         self.valid_aux.reset()
 
     def update_train(
@@ -140,6 +148,18 @@ class Metrics:
             self.valid_acc_token.update(correct_tokens, num_accuracy_tokens)
         if correct_samples is not None and num_accuracy_samples is not None:
             self.valid_acc_sample.update(correct_samples, num_accuracy_samples)
+
+    def update_valid_gen(
+        self,
+        correct_tokens=None,
+        num_accuracy_tokens=None,
+        correct_samples=None,
+        num_accuracy_samples=None,
+    ):
+        if correct_tokens is not None and num_accuracy_tokens is not None:
+            self.valid_gen_acc_token.update(correct_tokens, num_accuracy_tokens)
+        if correct_samples is not None and num_accuracy_samples is not None:
+            self.valid_gen_acc_sample.update(correct_samples, num_accuracy_samples)
 
     # Generative ppl logic removed; use standalone evaluation script instead.
 
