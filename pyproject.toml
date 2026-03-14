@@ -64,6 +64,7 @@ dependencies = [
     "rich==13.9.4",
     "ipdb>=0.13.13",
     "ruff>=0.15.1",
+    "matplotlib>=3.9.4",
 ]
 
 [project.optional-dependencies]
