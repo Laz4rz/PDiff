@@ -16,6 +16,7 @@ defaults:
   - /algo: candi
 
 seed: 1
+lr_log10: null  # If set (e.g. -4.0), uses optim.lr = 10 ** lr_log10.
 
 # base directory for caching datasets and models 
 scratch_dir: ${oc.env:DISCRETE_DIFFUSION_SCRATCH_DIR,${oc.env:HOME}/.cache/discrete_diffusion}
@@ -67,7 +68,7 @@ eval:
 
 optim:
   weight_decay: 0
-  lr: 3e-4
+  lr: ${lr_from_log10:${lr_log10},3e-4}
   beta1: 0.9
   beta2: 0.999
   eps: 1e-8

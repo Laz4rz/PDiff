@@ -5,6 +5,7 @@ Usage:
 """
 
 import os
+import math
 from pathlib import Path
 
 import hydra
@@ -38,12 +39,23 @@ def _mul_resolver(*args):
     )
 
 
+def _lr_from_log10_resolver(log10_lr, default_lr):
+    if log10_lr is None:
+        return float(default_lr)
+    if isinstance(log10_lr, str) and log10_lr.strip().lower() in {"", "none", "null"}:
+        return float(default_lr)
+    return 10 ** float(log10_lr)
+
+
 # Register OmegaConf resolvers for Hydra configs
 _register_resolver("cwd", os.getcwd)
 _register_resolver("device_count", torch.cuda.device_count)
 _register_resolver("div_up", lambda x, y: (x + y - 1) // y)
 _register_resolver("mul", _mul_resolver)
 _register_resolver("sub", lambda x, y: x - y)
+_register_resolver("pow10", lambda x: 10 ** float(x))
+_register_resolver("exp", lambda x: math.exp(float(x)))
+_register_resolver("lr_from_log10", _lr_from_log10_resolver)
 
 
 @L.pytorch.utilities.rank_zero_only
@@ -74,7 +86,11 @@ def _print_config(
 @hydra.main(version_base=None, config_path=CONFIG_PATH, config_name="config")
 def main(config):
     L.seed_everything(config.seed)
-    _print_config(config)
+    should_print_config = omegaconf.OmegaConf.select(
+        config, "logging.print_config", default=True
+    )
+    if should_print_config:
+        _print_config(config)
 
     logger = utils.get_logger(__name__)
     logger.info("Starting training...")

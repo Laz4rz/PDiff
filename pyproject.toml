@@ -65,6 +65,7 @@ dependencies = [
     "ipdb>=0.13.13",
     "ruff>=0.15.1",
     "matplotlib>=3.9.4",
+    "hydra-submitit-launcher>=1.2.0",
 ]
 
 [project.optional-dependencies]

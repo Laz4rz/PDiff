@@ -173,6 +173,7 @@ class GiddLossConstantPi(nn.Module):
         if self.loss_weighting == "clip":
             loss_weights = loss_weights.clip(self.min_loss_weight, self.max_loss_weight)
         elif self.loss_weighting == "dynamic":
+            raise NotImplementedError("Unsure about it")
             log_snr_like = torch.sigmoid(-t).clip(-20, 20)
             x_scale = pi_values * torch.exp(log_snr_like)
             loss_weights = (1 - is_x) * ((1 - is_x) + 2 * is_x) + is_x * x_scale

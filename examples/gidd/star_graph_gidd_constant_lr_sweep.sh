@@ -18,6 +18,13 @@ export WANDB_GROUP_PREFIX="${WANDB_GROUP_PREFIX:-star-graph-lr-sweep}"
 export MODELS="${MODELS:-tiny small}"
 export P_VALUES="${P_VALUES:-0 1}"
 export LR_VALUES="${LR_VALUES:-5e-5 1e-4 2e-4}"
+export SEEDS="${SEEDS:-1}"
+export SWEEP_SHARD_COUNT="${SWEEP_SHARD_COUNT:-1}"
+export SWEEP_SHARD_INDEX="${SWEEP_SHARD_INDEX:-0}"
+export MAX_PARALLEL_JOBS="${MAX_PARALLEL_JOBS:-1}"
+# Optional explicit GPU assignment list (space/comma separated), e.g. "0,1,2,3".
+# Defaults to CUDA_VISIBLE_DEVICES.
+export PARALLEL_GPU_LIST="${PARALLEL_GPU_LIST:-}"
 # Optional logspace override for LR values:
 #   LR_MIN=<float> LR_MAX=<float> LR_LOGSPACE_N=<int>
 # If all three are set, LR_VALUES is ignored.
@@ -53,6 +60,27 @@ spec_from_filename() {
 longest_entry_len() {
   local file_path="$1"
   awk 'length > max {max = length} END {print max + 0}' "${file_path}"
+}
+
+is_nonnegative_integer() {
+  [[ "$1" =~ ^[0-9]+$ ]]
+}
+
+cleanup_background_jobs() {
+  local pids=()
+  mapfile -t pids < <(jobs -pr)
+  if (( ${#pids[@]} > 0 )); then
+    kill "${pids[@]}" 2>/dev/null || true
+    wait "${pids[@]}" 2>/dev/null || true
+  fi
+}
+
+wait_for_one_background_job() {
+  if ! wait -n; then
+    echo "A background sweep run failed. Stopping remaining runs."
+    cleanup_background_jobs
+    exit 1
+  fi
 }
 
 declare -A TRAIN_FILE_BY_SPEC
@@ -102,6 +130,7 @@ fi
 
 IFS=' ' read -r -a MODEL_LIST <<< "${MODELS}"
 IFS=' ' read -r -a P_LIST <<< "${P_VALUES}"
+IFS=' ' read -r -a SEED_LIST <<< "${SEEDS}"
 LR_SOURCE="explicit"
 
 if [[ -n "${LR_MIN}" || -n "${LR_MAX}" || -n "${LR_LOGSPACE_N}" ]]; then
@@ -159,9 +188,35 @@ if (( ${#P_LIST[@]} == 0 )); then
   echo "No P values configured. Set P_VALUES, e.g. '0 1'."
   exit 1
 fi
+if (( ${#SEED_LIST[@]} == 0 )); then
+  echo "No seeds configured. Set SEEDS, e.g. '1 2 3'."
+  exit 1
+fi
 if (( ${#LR_LIST[@]} == 0 )); then
   echo "No LR values configured. Set LR_VALUES, e.g. '5e-5 1e-4 2e-4'."
   exit 1
+fi
+
+if ! is_nonnegative_integer "${SWEEP_SHARD_COUNT}" || (( SWEEP_SHARD_COUNT < 1 )); then
+  echo "SWEEP_SHARD_COUNT must be an integer >= 1 (got '${SWEEP_SHARD_COUNT}')."
+  exit 1
+fi
+if ! is_nonnegative_integer "${SWEEP_SHARD_INDEX}" || (( SWEEP_SHARD_INDEX < 0 || SWEEP_SHARD_INDEX >= SWEEP_SHARD_COUNT )); then
+  echo "SWEEP_SHARD_INDEX must be in [0, SWEEP_SHARD_COUNT-1] (got '${SWEEP_SHARD_INDEX}' for count ${SWEEP_SHARD_COUNT})."
+  exit 1
+fi
+if ! is_nonnegative_integer "${MAX_PARALLEL_JOBS}" || (( MAX_PARALLEL_JOBS < 1 )); then
+  echo "MAX_PARALLEL_JOBS must be an integer >= 1 (got '${MAX_PARALLEL_JOBS}')."
+  exit 1
+fi
+
+raw_parallel_gpu_list="${PARALLEL_GPU_LIST:-${CUDA_VISIBLE_DEVICES}}"
+raw_parallel_gpu_list="${raw_parallel_gpu_list//,/ }"
+IFS=' ' read -r -a PARALLEL_GPU_DEVICES <<< "${raw_parallel_gpu_list}"
+
+if (( MAX_PARALLEL_JOBS > 1 )) && (( ${#PARALLEL_GPU_DEVICES[@]} == 0 )); then
+  echo "MAX_PARALLEL_JOBS>1 and no GPUs parsed from PARALLEL_GPU_LIST/CUDA_VISIBLE_DEVICES."
+  echo "Parallel runs will share the same default CUDA visibility."
 fi
 
 SCHEDULER_ARGS=()
@@ -200,8 +255,15 @@ echo "WANDB_PROJECT=${WANDB_PROJECT}"
 echo "WANDB_GROUP_PREFIX=${WANDB_GROUP_PREFIX}"
 echo "MODELS=${MODEL_LIST[*]}"
 echo "P_VALUES=${P_LIST[*]}"
+echo "SEEDS=${SEED_LIST[*]}"
 echo "LR_SOURCE=${LR_SOURCE}"
 echo "LR_VALUES=${LR_LIST[*]}"
+echo "SWEEP_SHARD_COUNT=${SWEEP_SHARD_COUNT}"
+echo "SWEEP_SHARD_INDEX=${SWEEP_SHARD_INDEX}"
+echo "MAX_PARALLEL_JOBS=${MAX_PARALLEL_JOBS}"
+if (( ${#PARALLEL_GPU_DEVICES[@]} > 0 )); then
+  echo "PARALLEL_GPU_DEVICES=${PARALLEL_GPU_DEVICES[*]}"
+fi
 echo "LR_SCHEDULER=${LR_SCHEDULER}"
 if (( ${#SCHEDULER_ARGS[@]} > 0 )); then
   echo "LR_SCHEDULER_OVERRIDES=${SCHEDULER_ARGS[*]}"
@@ -218,8 +280,28 @@ if [[ -n "${SPEC_FILTER_REGEX}" ]]; then
 fi
 echo "DATASET_SPECS=${SPECS[*]}"
 
-total_runs=$(( ${#SPECS[@]} * ${#MODEL_LIST[@]} * ${#P_LIST[@]} * ${#LR_LIST[@]} ))
-run_idx=0
+total_runs=$(( ${#SPECS[@]} * ${#MODEL_LIST[@]} * ${#P_LIST[@]} * ${#LR_LIST[@]} * ${#SEED_LIST[@]} ))
+base_shard_runs=$(( total_runs / SWEEP_SHARD_COUNT ))
+shard_remainder=$(( total_runs % SWEEP_SHARD_COUNT ))
+if (( SWEEP_SHARD_INDEX < shard_remainder )); then
+  shard_total_runs=$(( base_shard_runs + 1 ))
+else
+  shard_total_runs="${base_shard_runs}"
+fi
+
+if (( shard_total_runs == 0 )); then
+  echo "No runs assigned to shard ${SWEEP_SHARD_INDEX}/${SWEEP_SHARD_COUNT}."
+  exit 0
+fi
+
+global_run_idx=0
+shard_run_idx=0
+active_jobs=0
+next_gpu_index=0
+
+if (( MAX_PARALLEL_JOBS > 1 )); then
+  trap cleanup_background_jobs EXIT INT TERM
+fi
 
 for spec in "${SPECS[@]}"; do
   train_file="${TRAIN_FILE_BY_SPEC[${spec}]}"
@@ -256,70 +338,119 @@ for spec in "${SPECS[@]}"; do
       run_group="${WANDB_GROUP_PREFIX}-${model_name}-d${deg}-n${nodes}-p${path_len}${reverse_tag}-P${p_uniform}"
 
       for lr_value in "${LR_LIST[@]}"; do
-        run_idx=$((run_idx + 1))
-        run_name="${run_group}-lr${lr_value}"
+        run_group_lr="${run_group}-lr${lr_value}"
+        for seed_value in "${SEED_LIST[@]}"; do
+          global_run_idx=$((global_run_idx + 1))
+          run_zero_idx=$((global_run_idx - 1))
+          if (( run_zero_idx % SWEEP_SHARD_COUNT != SWEEP_SHARD_INDEX )); then
+            continue
+          fi
 
-        echo
-        echo "[${run_idx}/${total_runs}] Starting sweep run:"
-        echo "  spec=${spec}"
-        echo "  train_file=${train_file}"
-        echo "  validation_file=${validation_file}"
-        echo "  model=${model_name}"
-        echo "  model.length=${model_length} (train_max=${train_max_len}, val_max=${validation_max_len})"
-        echo "  p_uniform=${p_uniform}"
-        echo "  optim.lr=${lr_value}"
-        echo "  wandb.group=${run_group}"
-        echo "  wandb.name=${run_name}"
+          shard_run_idx=$((shard_run_idx + 1))
+          run_name="${run_group_lr}-seed${seed_value}"
+          assigned_gpu=""
+          if (( MAX_PARALLEL_JOBS > 1 )) && (( ${#PARALLEL_GPU_DEVICES[@]} > 0 )); then
+            assigned_gpu="${PARALLEL_GPU_DEVICES[$((next_gpu_index % ${#PARALLEL_GPU_DEVICES[@]}))]}"
+            next_gpu_index=$((next_gpu_index + 1))
+          fi
 
-        run_args=(
-          data=star_graph
-          data.tokenizer_name_or_path=ascii-char
-          data.dataset_config.train_file="${train_file}"
-          data.dataset_config.validation_file="${validation_file}"
-          model="${model_name}"
-          algo=gidd
-          algo.loss_type=gidd_constant_pi
-          algo.p_uniform="${p_uniform}"
-          algo.loss_weighting=dynamic
-          lr_scheduler="${LR_SCHEDULER}"
-          strategy=single-device
-          trainer.deterministic=true
-          trainer.num_nodes=1
-          trainer.devices=1
-          trainer.max_epochs="${MAX_EPOCHS}"
-          loader.global_batch_size="${GLOBAL_BATCH_SIZE}"
-          loader.batch_size="${BATCH_SIZE}"
-          loader.eval_batch_size="${EVAL_BATCH_SIZE}"
-          trainer.log_every_n_steps=25
-          trainer.val_check_interval="${VAL_CHECK_INTERVAL}"
-          trainer.limit_train_batches=1.0
-          trainer.limit_val_batches=1.0
-          callbacks.checkpoint_every_n_steps.save_top_k=0
-          callbacks.checkpoint_every_n_steps.save_last=false
-          callbacks.checkpoint_monitor.monitor=val/nll
-          callbacks.checkpoint_monitor.save_top_k=1
-          callbacks.checkpoint_monitor.save_last=true
-          trainer.precision="${PRECISION}"
-          training.torch_compile=false
-          model.length="${model_length}"
-          model.max_tokens=-1
-          model.dropout=0.0
-          optim.lr="${lr_value}"
-          optim.weight_decay=0.0
-          optim.beta1=0.9
-          optim.beta2=0.99
-          optim.eps=1e-9
-          eval.generate_samples=false
-          wandb.save_dir="${WANDB_DIR}"
-          wandb.project="${WANDB_PROJECT}"
-          wandb.group="${run_group}"
-          wandb.job_type=lr-sweep
-          wandb.name="${run_name}"
-        )
-        run_args+=("${SCHEDULER_ARGS[@]}")
+          echo
+          echo "[shard ${shard_run_idx}/${shard_total_runs} | global ${global_run_idx}/${total_runs}] Starting sweep run:"
+          echo "  spec=${spec}"
+          echo "  train_file=${train_file}"
+          echo "  validation_file=${validation_file}"
+          echo "  model=${model_name}"
+          echo "  model.length=${model_length} (train_max=${train_max_len}, val_max=${validation_max_len})"
+          echo "  p_uniform=${p_uniform}"
+          echo "  optim.lr=${lr_value}"
+          echo "  seed=${seed_value}"
+          echo "  wandb.group=${run_group_lr}"
+          echo "  wandb.name=${run_name}"
+          if (( MAX_PARALLEL_JOBS > 1 )); then
+            echo "  execution_mode=parallel"
+          else
+            echo "  execution_mode=sequential"
+          fi
+          if [[ -n "${assigned_gpu}" ]]; then
+            echo "  assigned_cuda_visible_devices=${assigned_gpu}"
+          fi
 
-        uv run python -u -m discrete_diffusion "${run_args[@]}"
+          run_args=(
+            data=star_graph
+            data.tokenizer_name_or_path=ascii-char
+            data.dataset_config.train_file="${train_file}"
+            data.dataset_config.validation_file="${validation_file}"
+            model="${model_name}"
+            algo=gidd
+            algo.loss_type=gidd_constant_pi
+            algo.p_uniform="${p_uniform}"
+            algo.loss_weighting=dynamic
+            lr_scheduler="${LR_SCHEDULER}"
+            seed="${seed_value}"
+            strategy=single-device
+            trainer.deterministic=true
+            trainer.num_nodes=1
+            trainer.devices=1
+            trainer.max_epochs="${MAX_EPOCHS}"
+            loader.global_batch_size="${GLOBAL_BATCH_SIZE}"
+            loader.batch_size="${BATCH_SIZE}"
+            loader.eval_batch_size="${EVAL_BATCH_SIZE}"
+            trainer.log_every_n_steps=25
+            trainer.val_check_interval="${VAL_CHECK_INTERVAL}"
+            trainer.limit_train_batches=1.0
+            trainer.limit_val_batches=1.0
+            callbacks.checkpoint_every_n_steps.save_top_k=0
+            callbacks.checkpoint_every_n_steps.save_last=false
+            callbacks.checkpoint_monitor.monitor=val/nll
+            callbacks.checkpoint_monitor.save_top_k=1
+            callbacks.checkpoint_monitor.save_last=true
+            trainer.precision="${PRECISION}"
+            training.torch_compile=false
+            model.length="${model_length}"
+            model.max_tokens=-1
+            model.dropout=0.0
+            optim.lr="${lr_value}"
+            optim.weight_decay=0.0
+            optim.beta1=0.9
+            optim.beta2=0.99
+            optim.eps=1e-9
+            eval.generate_samples=false
+            wandb.save_dir="${WANDB_DIR}"
+            wandb.project="${WANDB_PROJECT}"
+            wandb.group="${run_group_lr}"
+            wandb.job_type=lr-sweep
+            wandb.name="${run_name}"
+          )
+          run_args+=("${SCHEDULER_ARGS[@]}")
+
+          if (( MAX_PARALLEL_JOBS > 1 )); then
+            if (( active_jobs >= MAX_PARALLEL_JOBS )); then
+              wait_for_one_background_job
+              active_jobs=$((active_jobs - 1))
+            fi
+
+            if [[ -n "${assigned_gpu}" ]]; then
+              CUDA_VISIBLE_DEVICES="${assigned_gpu}" uv run python -u -m discrete_diffusion "${run_args[@]}" &
+            else
+              uv run python -u -m discrete_diffusion "${run_args[@]}" &
+            fi
+            active_jobs=$((active_jobs + 1))
+          else
+            if [[ -n "${assigned_gpu}" ]]; then
+              CUDA_VISIBLE_DEVICES="${assigned_gpu}" uv run python -u -m discrete_diffusion "${run_args[@]}"
+            else
+              uv run python -u -m discrete_diffusion "${run_args[@]}"
+            fi
+          fi
+        done
       done
     done
   done
 done
+
+if (( MAX_PARALLEL_JOBS > 1 )); then
+  while (( active_jobs > 0 )); do
+    wait_for_one_background_job
+    active_jobs=$((active_jobs - 1))
+  done
+fi
