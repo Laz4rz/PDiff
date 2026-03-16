@@ -17,6 +17,7 @@ QOS="${QOS:-}"
 CONSTRAINT="${CONSTRAINT:-}"
 SBATCH_LOG_DIR="${SBATCH_LOG_DIR:-${REPO_ROOT}/outputs/slurm_logs}"
 DRY_RUN="${DRY_RUN:-0}"
+SLURM_ENVIRONMENT="${SLURM_ENVIRONMENT:-uni-d2}"
 
 SWEEP_MAX_PARALLEL="${SWEEP_MAX_PARALLEL:-${GPUS_PER_NODE}}"
 SWEEP_GPUS="${SWEEP_GPUS:-}"
@@ -53,7 +54,11 @@ for override in "$@"; do
 done
 
 quoted_cmd="$(printf '%q ' "${cmd[@]}")"
-wrap_cmd="cd ${REPO_ROOT@Q} && ${quoted_cmd}"
+if [[ -n "${SLURM_ENVIRONMENT}" ]]; then
+  wrap_cmd="cd ${REPO_ROOT@Q} && srun --environment ${SLURM_ENVIRONMENT@Q} ${quoted_cmd}"
+else
+  wrap_cmd="cd ${REPO_ROOT@Q} && ${quoted_cmd}"
+fi
 
 sbatch_args=(
   --parsable
@@ -99,6 +104,9 @@ echo "Config: ${CONFIG_NAME}"
 echo "GPUs in allocation: ${GPUS_PER_NODE}"
 echo "Sweep GPU pool: ${SWEEP_GPUS}"
 echo "Max parallel runs: ${SWEEP_MAX_PARALLEL}"
+if [[ -n "${SLURM_ENVIRONMENT}" ]]; then
+  echo "Slurm environment: ${SLURM_ENVIRONMENT}"
+fi
 if (( $# > 0 )); then
   echo "Forwarded Hydra overrides: $*"
 fi
