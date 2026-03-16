@@ -97,7 +97,7 @@ checkpointing:
   resume_from_ckpt: false
 
 wandb:
-  project: star_graph_gidd_lr_sweep_multirun
+  project: star_graph_gidd_lr_sweep_multirun_slurm
   save_dir: ${hydra:runtime.cwd}/wandb_logs
   group: d3n3p50-uniform-clip-lr-sweep
   job_type: lr-sweep

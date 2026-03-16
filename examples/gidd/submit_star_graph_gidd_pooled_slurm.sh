@@ -5,15 +5,14 @@ REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "${REPO_ROOT}" || exit 1
 
 CONFIG_NAME="${CONFIG_NAME:-gidd_star_graph_constant_lr_sweep}"
-PYTHON_BIN="${PYTHON_BIN:-${REPO_ROOT}/.venv/bin/python}"
 
 JOB_NAME="${JOB_NAME:-gidd-star-pool}"
 TIME_LIMIT="${TIME_LIMIT:-04:00:00}"
 GPUS_PER_NODE="${GPUS_PER_NODE:-4}"
-CPUS_PER_TASK="${CPUS_PER_TASK:-8}"
+CPUS_PER_TASK="${CPUS_PER_TASK:-16}"
 MEM_GB="${MEM_GB:-64}"
-PARTITION="${PARTITION:-}"
-ACCOUNT="${ACCOUNT:-}"
+PARTITION="${PARTITION:-normal}"
+ACCOUNT="${ACCOUNT:-a137}"
 QOS="${QOS:-}"
 CONSTRAINT="${CONSTRAINT:-}"
 SBATCH_LOG_DIR="${SBATCH_LOG_DIR:-${REPO_ROOT}/outputs/slurm_logs}"
@@ -35,7 +34,7 @@ SWEEP_DIR="${SWEEP_DIR:-}"
 mkdir -p "${SBATCH_LOG_DIR}"
 
 cmd=(
-  "${PYTHON_BIN}"
+  "python"
   scripts/hydra_sweep_gpu_pool.py
   --config-name "${CONFIG_NAME}"
   --gpus "${SWEEP_GPUS}"
