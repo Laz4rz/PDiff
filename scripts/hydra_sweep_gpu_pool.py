@@ -187,8 +187,8 @@ def main() -> int:
     )
     parser.add_argument(
         "--config-name",
-        default="gidd_star_graph_constant_lr_sweep",
-        help="Hydra config name under configs/ (default: gidd_star_graph_constant_lr_sweep).",
+        default="gidd_star_graph_d3p3n50_constant_lr_sweep",
+        help="Hydra config name under configs/ (default: gidd_star_graph_d3p3n50_constant_lr_sweep).",
     )
     parser.add_argument(
         "--module",

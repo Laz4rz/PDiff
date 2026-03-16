@@ -1,9 +1,9 @@
 # Launch (Submitit local; one job per sweep point):
-# .venv/bin/python -m discrete_diffusion --config-name gidd_star_graph_constant_lr_sweep
+# .venv/bin/python -m discrete_diffusion --config-name gidd_star_graph_d2p5n50_constant_lr_sweep
 # Launch (Submitit Slurm; one Slurm job per sweep point):
-# .venv/bin/python -m discrete_diffusion --config-name gidd_star_graph_constant_lr_sweep launch_preset=slurm hydra/launcher=submitit_slurm
+# .venv/bin/python -m discrete_diffusion --config-name gidd_star_graph_d2p5n50_constant_lr_sweep launch_preset=slurm hydra/launcher=submitit_slurm
 # Launch (single allocation, pooled GPUs, same sweep axes from this config):
-# .venv/bin/python scripts/hydra_sweep_gpu_pool.py --config-name gidd_star_graph_constant_lr_sweep --gpus 0,1,2,3 --max-parallel 4
+# .venv/bin/python scripts/hydra_sweep_gpu_pool.py --config-name gidd_star_graph_d2p5n50_constant_lr_sweep --gpus 0,1,2,3 --max-parallel 4
 # Submit pooled run as one Slurm job:
 # bash examples/gidd/submit_star_graph_gidd_pooled_slurm.sh
 defaults:
@@ -34,7 +34,7 @@ launch_presets:
     mem_gb: 32
 
 pooled_slurm:
-  job_name: gidd-star-pool
+  job_name: gidd-star-pool-d2p5n50
   time_limit: "04:00:00"
   cpus_per_task: 16
   gpus_per_node: 4
@@ -56,12 +56,11 @@ data:
   tokenizer_name_or_path: ascii-char
   dataset_config:
     data_dir: ${hydra:runtime.cwd}/data/star
-    train_file: deg_3_path_3_nodes_50_reverse_False_200000_train.txt
-    validation_file: deg_3_path_3_nodes_50_reverse_False_20000_test.txt
+    train_file: deg_2_path_5_nodes_50_train_200000.txt
+    validation_file: deg_2_path_5_nodes_50_test_20000.txt
 
 algo:
   loss_type: gidd_constant_pi
-  p_uniform: 1.0
   loss_weighting: clip
   min_loss_weight: 0.0
   max_loss_weight: 1.0
@@ -90,7 +89,7 @@ training:
   torch_compile: false
 
 model:
-  length: 50
+  length: 68
   max_tokens: -1
   dropout: 0.0
 
@@ -116,11 +115,11 @@ checkpointing:
   resume_from_ckpt: false
 
 wandb:
-  project: star_graph_gidd_lr_sweep_multirun_slurm
+  project: star_graph_gidd_lr_sweep_multirun_slurm_d2p5n50
   save_dir: ${hydra:runtime.cwd}/wandb_logs
-  group: d3n3p50-uniform-clip-lr-sweep
+  group: d2p5n50-uniform-clip-lr-sweep
   job_type: lr-sweep
-  name: d3n3p50-s${seed}-lr${optim.lr}
+  name: d2p5n50-s${seed}-lr${optim.lr}-pu${algo.p_uniform}
 
 logging:
   print_config: false
@@ -129,7 +128,7 @@ hydra:
   mode: MULTIRUN
   verbose: false
   sweep:
-    dir: ./outputs/sweeps/d3n3p50_uniform_clip/${now:%Y.%m.%d}/${now:%H%M%S}
+    dir: ./outputs/sweeps/d2p5n50_uniform_clip/${now:%Y.%m.%d}/${now:%H%M%S}
   hydra_logging:
     root:
       level: ERROR
@@ -148,8 +147,9 @@ hydra:
   sweeper:
     max_batch_size: ${launch_presets.${launch_preset}.max_batch_size}
     params:
+      algo.p_uniform: 0,1
       seed: 1,2,3
-      lr_log10: range(-5.0,-2.0,1)
+      lr_log10: range(-6.0,-1.0,0.25)
   launcher:
     timeout_min: ${launch_presets.${launch_preset}.timeout_min}
     cpus_per_task: ${launch_presets.${launch_preset}.cpus_per_task}

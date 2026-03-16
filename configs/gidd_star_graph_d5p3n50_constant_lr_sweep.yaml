@@ -1,0 +1,158 @@
+# Launch (Submitit local; one job per sweep point):
+# .venv/bin/python -m discrete_diffusion --config-name gidd_star_graph_d5p3n50_constant_lr_sweep
+# Launch (Submitit Slurm; one Slurm job per sweep point):
+# .venv/bin/python -m discrete_diffusion --config-name gidd_star_graph_d5p3n50_constant_lr_sweep launch_preset=slurm hydra/launcher=submitit_slurm
+# Launch (single allocation, pooled GPUs, same sweep axes from this config):
+# .venv/bin/python scripts/hydra_sweep_gpu_pool.py --config-name gidd_star_graph_d5p3n50_constant_lr_sweep --gpus 0,1,2,3 --max-parallel 4
+# Submit pooled run as one Slurm job:
+# bash examples/gidd/submit_star_graph_gidd_pooled_slurm.sh
+defaults:
+  - config
+  - override /data: star_graph
+  - override /model: tiny
+  - override /algo: gidd
+  - override /strategy: single-device
+  - override /lr_scheduler: constant_warmup
+  - override hydra/launcher: submitit_local
+  - _self_
+
+launch_preset: local
+launch_presets:
+  local:
+    max_batch_size: 2
+    timeout_min: 240
+    cpus_per_task: 8
+    gpus_per_node: 1
+    tasks_per_node: 1
+    mem_gb: null
+  slurm:
+    max_batch_size: 32
+    timeout_min: 240
+    cpus_per_task: 8
+    gpus_per_node: 1
+    tasks_per_node: 1
+    mem_gb: 32
+
+pooled_slurm:
+  job_name: gidd-star-pool-d5p3n50
+  time_limit: "04:00:00"
+  cpus_per_task: 16
+  gpus_per_node: 4
+  mem_gb: 64
+  partition: normal
+  account: a137
+  qos: null
+  constraint: null
+  slurm_environment: uni-d2
+  sbatch_log_dir: outputs/slurm_logs
+  sweep_max_parallel: ${.gpus_per_node}
+  sweep_gpus: null
+  sweep_limit: null
+  sweep_dir: null
+  cache_root: ${oc.env:SLURM_TMPDIR,/tmp}/discrete_diffusion
+  wandb_token_file: /users/mboronski/.secrets/wandb_token
+
+data:
+  tokenizer_name_or_path: ascii-char
+  dataset_config:
+    data_dir: ${hydra:runtime.cwd}/data/star
+    train_file: deg_5_path_3_nodes_50_train_200000.txt
+    validation_file: deg_5_path_3_nodes_50_test_20000.txt
+
+algo:
+  loss_type: gidd_constant_pi
+  loss_weighting: clip
+  min_loss_weight: 0.0
+  max_loss_weight: 1.0
+
+trainer:
+  deterministic: true
+  num_nodes: 1
+  devices: 1
+  enable_progress_bar: false
+  enable_model_summary: false
+  max_epochs: 10
+  max_steps: -1
+  log_every_n_steps: 25
+  val_check_interval: 500
+  limit_train_batches: 1.0
+  limit_val_batches: 1.0
+  precision: bf16-mixed
+
+loader:
+  global_batch_size: 256
+  batch_size: 256
+  eval_batch_size: 512
+  num_workers: 8
+
+training:
+  torch_compile: false
+
+model:
+  length: 74
+  max_tokens: -1
+  dropout: 0.0
+
+optim:
+  weight_decay: 0.0
+  beta1: 0.9
+  beta2: 0.99
+  eps: 1e-9
+
+callbacks:
+  checkpoint_every_n_steps:
+    save_top_k: 0
+    save_last: false
+  checkpoint_monitor:
+    monitor: val/nll
+    save_top_k: 1
+    save_last: true
+
+eval:
+  generate_samples: false
+
+checkpointing:
+  resume_from_ckpt: false
+
+wandb:
+  project: star_graph_gidd_lr_sweep_multirun_slurm_d5p3n50
+  save_dir: ${hydra:runtime.cwd}/wandb_logs
+  group: d5p3n50-uniform-clip-lr-sweep
+  job_type: lr-sweep
+  name: d5p3n50-s${seed}-lr${optim.lr}-pu${algo.p_uniform}
+
+logging:
+  print_config: false
+
+hydra:
+  mode: MULTIRUN
+  verbose: false
+  sweep:
+    dir: ./outputs/sweeps/d5p3n50_uniform_clip/${now:%Y.%m.%d}/${now:%H%M%S}
+  hydra_logging:
+    root:
+      level: ERROR
+  job_logging:
+    root:
+      level: ERROR
+    loggers:
+      wandb:
+        level: INFO
+      wandb.sdk:
+        level: INFO
+      lightning:
+        level: ERROR
+      pytorch_lightning:
+        level: ERROR
+  sweeper:
+    max_batch_size: ${launch_presets.${launch_preset}.max_batch_size}
+    params:
+      algo.p_uniform: 0,1
+      seed: 1,2,3
+      lr_log10: range(-6.0,-1.0,0.25)
+  launcher:
+    timeout_min: ${launch_presets.${launch_preset}.timeout_min}
+    cpus_per_task: ${launch_presets.${launch_preset}.cpus_per_task}
+    gpus_per_node: ${launch_presets.${launch_preset}.gpus_per_node}
+    tasks_per_node: ${launch_presets.${launch_preset}.tasks_per_node}
+    mem_gb: ${launch_presets.${launch_preset}.mem_gb}

@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="${REPO_ROOT:-$(cd -- "${SCRIPT_DIR}/../.." && pwd)}"
 cd "${REPO_ROOT}" || exit 1
 
-CONFIG_NAME="${CONFIG_NAME:-gidd_star_graph_constant_lr_sweep}"
+CONFIG_NAME="${CONFIG_NAME:-none}"
 DRY_RUN="${DRY_RUN:-0}"
 PYTHON_BIN="${PYTHON_BIN:-python}"
 if ! command -v "${PYTHON_BIN}" >/dev/null 2>&1; then
@@ -17,7 +17,86 @@ if ! command -v "${PYTHON_BIN}" >/dev/null 2>&1; then
   fi
 fi
 
-hydra_overrides=("$@")
+hydra_overrides=()
+
+print_usage() {
+  cat <<'EOF'
+Usage:
+  bash examples/gidd/submit_star_graph_gidd_pooled_slurm.sh [--config-name NAME|-c NAME] [hydra_override ...]
+  bash examples/gidd/submit_star_graph_gidd_pooled_slurm.sh [CONFIG_NAME] [hydra_override ...]
+
+Examples:
+  bash examples/gidd/submit_star_graph_gidd_pooled_slurm.sh loader.num_workers=1
+  bash examples/gidd/submit_star_graph_gidd_pooled_slurm.sh --config-name gidd_star_graph_d3p3n50_constant_lr_sweep loader.num_workers=1
+  bash examples/gidd/submit_star_graph_gidd_pooled_slurm.sh --config-name gidd_star_graph_d5p3n50_constant_lr_sweep loader.num_workers=1
+  bash examples/gidd/submit_star_graph_gidd_pooled_slurm.sh --config-name gidd_star_graph_d2p5n50_constant_lr_sweep loader.num_workers=1
+  bash examples/gidd/submit_star_graph_gidd_pooled_slurm.sh --config-name gidd_star_graph_d2p2n50_constant_lr_sweep loader.num_workers=1
+EOF
+}
+
+config_exists() {
+  local name="$1"
+  [[ -n "${name}" && -f "${REPO_ROOT}/configs/${name}.yaml" ]]
+}
+
+while (($# > 0)); do
+  case "$1" in
+    --config-name|-c)
+      if (($# < 2)) || [[ -z "${2}" ]] || [[ "${2}" == -* ]]; then
+        echo "Error: --config-name requires a non-empty value." >&2
+        print_usage >&2
+        exit 1
+      fi
+      CONFIG_NAME="$2"
+      shift 2
+      ;;
+    --config-name=*)
+      CONFIG_NAME="${1#*=}"
+      if [[ -z "${CONFIG_NAME}" ]]; then
+        echo "Error: --config-name requires a non-empty value." >&2
+        print_usage >&2
+        exit 1
+      fi
+      shift
+      ;;
+    -h|--help)
+      print_usage
+      exit 0
+      ;;
+    *)
+      hydra_overrides+=("$1")
+      shift
+      ;;
+  esac
+done
+
+# Support positional config name when flag is omitted:
+#   bash .../submit_star_graph_gidd_pooled_slurm.sh gidd_star_graph_d5p3n50_constant_lr_sweep loader.num_workers=1
+if (( ${#hydra_overrides[@]} > 0 )) && [[ "${hydra_overrides[0]}" != *=* ]]; then
+  positional_config="${hydra_overrides[0]}"
+  if config_exists "${positional_config}"; then
+    CONFIG_NAME="${positional_config}"
+    hydra_overrides=("${hydra_overrides[@]:1}")
+  else
+    echo "Error: first positional argument '${positional_config}' is not a valid config name." >&2
+    echo "Use --config-name <NAME> or provide an existing config under configs/." >&2
+    print_usage >&2
+    exit 1
+  fi
+fi
+
+if ! config_exists "${CONFIG_NAME}"; then
+  echo "Error: config '${CONFIG_NAME}' not found at configs/${CONFIG_NAME}.yaml" >&2
+  print_usage >&2
+  exit 1
+fi
+
+# Force node-local tmpfs by default to avoid NFS tempfile behavior.
+# Override with LOCAL_TMPDIR if you need a different local path.
+LOCAL_TMPDIR="${LOCAL_TMPDIR:-/tmp}"
+TMPDIR="${LOCAL_TMPDIR}"
+TMP="${LOCAL_TMPDIR}"
+TEMP="${LOCAL_TMPDIR}"
 
 # Read pooled Slurm defaults from the selected Hydra config.
 cfg_exports="$(
@@ -137,15 +216,16 @@ if [[ -n "${SWEEP_DIR}" ]]; then
   cmd+=(--sweep-dir "${SWEEP_DIR}")
 fi
 
-for override in "$@"; do
+for override in "${hydra_overrides[@]}"; do
   cmd+=(--override "${override}")
 done
 
 quoted_cmd="$(printf '%q ' "${cmd[@]}")"
+tmp_message="Using temp dirs: TMPDIR=${TMPDIR} TMP=${TMP} TEMP=${TEMP}"
 if [[ -n "${SLURM_ENVIRONMENT}" ]]; then
-  wrap_cmd="cd ${REPO_ROOT@Q} && srun --environment ${SLURM_ENVIRONMENT@Q} --chdir ${REPO_ROOT@Q} ${quoted_cmd}"
+  wrap_cmd="cd ${REPO_ROOT@Q} && echo ${tmp_message@Q} && TMPDIR=${TMPDIR@Q} TMP=${TMP@Q} TEMP=${TEMP@Q} srun --environment ${SLURM_ENVIRONMENT@Q} --chdir ${REPO_ROOT@Q} ${quoted_cmd}"
 else
-  wrap_cmd="cd ${REPO_ROOT@Q} && ${quoted_cmd}"
+  wrap_cmd="cd ${REPO_ROOT@Q} && echo ${tmp_message@Q} && TMPDIR=${TMPDIR@Q} TMP=${TMP@Q} TEMP=${TEMP@Q} ${quoted_cmd}"
 fi
 
 sbatch_args=(
@@ -192,9 +272,10 @@ echo "Config: ${CONFIG_NAME}"
 echo "GPUs in allocation: ${GPUS_PER_NODE}"
 echo "Sweep GPU pool: ${SWEEP_GPUS}"
 echo "Max parallel runs: ${SWEEP_MAX_PARALLEL}"
+echo "Temp dirs: TMPDIR=${TMPDIR} TMP=${TMP} TEMP=${TEMP}"
 if [[ -n "${SLURM_ENVIRONMENT}" ]]; then
   echo "Slurm environment: ${SLURM_ENVIRONMENT}"
 fi
-if (( $# > 0 )); then
-  echo "Forwarded Hydra overrides: $*"
+if (( ${#hydra_overrides[@]} > 0 )); then
+  echo "Forwarded Hydra overrides: ${hydra_overrides[*]}"
 fi
