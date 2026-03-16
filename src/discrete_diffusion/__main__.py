@@ -6,6 +6,7 @@ Usage:
 
 import os
 import math
+import json
 from pathlib import Path
 
 import hydra
@@ -58,6 +59,63 @@ _register_resolver("exp", lambda x: math.exp(float(x)))
 _register_resolver("lr_from_log10", _lr_from_log10_resolver)
 
 
+def _runtime_repro_context(config: omegaconf.DictConfig) -> dict:
+    env_keys = [
+        "CUDA_VISIBLE_DEVICES",
+        "SLURM_JOB_ID",
+        "SLURM_TMPDIR",
+        "PYTHONHASHSEED",
+        "CUBLAS_WORKSPACE_CONFIG",
+        "PDIFF_DISPATCH_SIGNATURE",
+        "PDIFF_RUN_INDEX",
+    ]
+    env_values = {}
+    for key in env_keys:
+        value = os.environ.get(key)
+        if value not in (None, ""):
+            env_values[key] = value
+
+    device_name = None
+    if torch.cuda.is_available():
+        try:
+            device_name = torch.cuda.get_device_name(0)
+        except RuntimeError:
+            device_name = "<unavailable>"
+
+    return {
+        "seed": omegaconf.OmegaConf.select(config, "seed", default=None),
+        "lr_log10": omegaconf.OmegaConf.select(config, "lr_log10", default=None),
+        "optim_lr": omegaconf.OmegaConf.select(config, "optim.lr", default=None),
+        "trainer_precision": omegaconf.OmegaConf.select(
+            config, "trainer.precision", default=None
+        ),
+        "trainer_deterministic": omegaconf.OmegaConf.select(
+            config, "trainer.deterministic", default=None
+        ),
+        "force_deterministic_algorithms": omegaconf.OmegaConf.select(
+            config, "training.force_deterministic_algorithms", default=False
+        ),
+        "torch_deterministic_algorithms_enabled": torch.are_deterministic_algorithms_enabled(),
+        "torch_matmul_precision": torch.get_float32_matmul_precision(),
+        "cuda_matmul_allow_tf32": (
+            torch.backends.cuda.matmul.allow_tf32
+            if torch.cuda.is_available()
+            else None
+        ),
+        "cudnn_allow_tf32": (
+            torch.backends.cudnn.allow_tf32 if torch.cuda.is_available() else None
+        ),
+        "cudnn_deterministic": torch.backends.cudnn.deterministic,
+        "cudnn_benchmark": torch.backends.cudnn.benchmark,
+        "cuda_available": torch.cuda.is_available(),
+        "cuda_device_count": torch.cuda.device_count(),
+        "cuda_device_name_0": device_name,
+        "torch_version": torch.__version__,
+        "torch_cuda_version": torch.version.cuda,
+        "env": env_values,
+    }
+
+
 @L.pytorch.utilities.rank_zero_only
 def _print_config(
     config: omegaconf.DictConfig, resolve: bool = True, save_cfg: bool = True
@@ -85,6 +143,7 @@ def _print_config(
 
 @hydra.main(version_base=None, config_path=CONFIG_PATH, config_name="config")
 def main(config):
+    logger = utils.get_logger(__name__)
     force_deterministic_algos = bool(
         omegaconf.OmegaConf.select(
             config, "training.force_deterministic_algorithms", default=False
@@ -98,13 +157,16 @@ def main(config):
         torch.backends.cudnn.benchmark = False
 
     L.seed_everything(config.seed, workers=True)
+    logger.info(
+        "Runtime reproducibility context: %s",
+        json.dumps(_runtime_repro_context(config), sort_keys=True),
+    )
     should_print_config = omegaconf.OmegaConf.select(
         config, "logging.print_config", default=True
     )
     if should_print_config:
         _print_config(config)
 
-    logger = utils.get_logger(__name__)
     logger.info("Starting training...")
     train_function(config)
     logger.info("Training completed successfully.")

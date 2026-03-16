@@ -13,6 +13,7 @@ with a unique `hydra.run.dir` and a per-process `CUDA_VISIBLE_DEVICES`.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import itertools
 import json
 import os
@@ -27,6 +28,32 @@ from typing import Any
 
 from hydra import compose, initialize_config_dir
 from omegaconf import OmegaConf
+
+
+DISPATCH_RESERVED_OVERRIDE_KEYS = {
+    "hydra.mode",
+    "hydra.run.dir",
+    "data.cache_dir",
+}
+
+DISPATCH_REPRO_ENV_KEYS = [
+    "PYTHONHASHSEED",
+    "PYTHONPATH",
+    "OMP_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "TOKENIZERS_PARALLELISM",
+    "HF_HOME",
+    "HF_DATASETS_CACHE",
+    "TRANSFORMERS_CACHE",
+    "DISCRETE_DIFFUSION_SCRATCH_DIR",
+    "CUBLAS_WORKSPACE_CONFIG",
+    "CUDA_VISIBLE_DEVICES",
+    "SLURM_JOB_ID",
+    "SLURM_TMPDIR",
+    "WANDB_MODE",
+    "WANDB_TOKEN_FILE",
+    "WANDB_API_KEY",
+]
 
 
 def _split_csv(expr: str) -> list[str]:
@@ -83,6 +110,31 @@ def _parse_gpus(raw_gpus: str | None) -> list[str]:
     if not gpus:
         return ["0"]
     return gpus
+
+
+def _normalized_override_key(override: str) -> str:
+    key = override.split("=", 1)[0]
+    return key.lstrip("+~")
+
+
+def _stable_sha256(payload: Any) -> str:
+    encoded = json.dumps(
+        payload, sort_keys=True, ensure_ascii=True, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _dispatch_repro_env(env: dict[str, str]) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for key in DISPATCH_REPRO_ENV_KEYS:
+        value = env.get(key)
+        if value in (None, ""):
+            continue
+        if key == "WANDB_API_KEY":
+            out[key] = "<redacted>"
+        else:
+            out[key] = value
+    return out
 
 
 def _inject_wandb_api_key(
@@ -182,6 +234,13 @@ def main() -> int:
         help="Print planned commands without executing.",
     )
     args = parser.parse_args()
+    user_override_keys = {_normalized_override_key(item) for item in args.override}
+    forbidden_keys = sorted(user_override_keys & DISPATCH_RESERVED_OVERRIDE_KEYS)
+    if forbidden_keys:
+        raise SystemExit(
+            "The pooled runner manages these overrides internally. "
+            f"Remove from --override: {', '.join(forbidden_keys)}"
+        )
 
     repo_root = Path(__file__).resolve().parents[1]
     config_dir = repo_root / "configs"
@@ -261,14 +320,15 @@ def main() -> int:
             args.module,
             "--config-name",
             args.config_name,
-            "hydra.mode=RUN",
-            f"hydra.run.dir={run_dir.as_posix()}",
             *args.override,
             *per_run_overrides,
+            "hydra.mode=RUN",
+            f"hydra.run.dir={run_dir.as_posix()}",
         ]
         runs.append(
             {
                 "index": idx,
+                "axis_values": {k: v for k, v in zip(keys, combo)},
                 "overrides": per_run_overrides,
                 "run_dir": run_dir.as_posix(),
                 "cache_dir": run_cache_dir.as_posix(),
@@ -288,8 +348,6 @@ def main() -> int:
         "max_parallel": max_parallel,
         "runs": runs,
     }
-    with (sweep_root / "pool_manifest.json").open("w", encoding="utf-8") as fp:
-        json.dump(manifest, fp, indent=2)
 
     print(
         f"Planned {len(runs)} runs from axes {keys} | gpus={gpus} | max_parallel={max_parallel}"
@@ -304,6 +362,23 @@ def main() -> int:
     repo_src = (repo_root / "src").resolve()
     base_env = os.environ.copy()
     _inject_wandb_api_key(base_env, configured_wandb_token_file)
+    dispatch_env = _dispatch_repro_env(base_env)
+    dispatch_signature = _stable_sha256(
+        {
+            "config_name": args.config_name,
+            "module": args.module,
+            "python_bin": args.python_bin,
+            "base_overrides": args.override,
+            "axes": keys,
+            "dispatch_env": dispatch_env,
+        }
+    )
+    base_env["PDIFF_DISPATCH_SIGNATURE"] = dispatch_signature
+    manifest["dispatch_signature"] = dispatch_signature
+    manifest["dispatch_env"] = dispatch_env
+    with (sweep_root / "pool_manifest.json").open("w", encoding="utf-8") as fp:
+        json.dump(manifest, fp, indent=2)
+    print(f"Dispatch signature: {dispatch_signature[:12]}")
     pending = runs.copy()
     available_gpus = gpus.copy()
     active: list[ActiveRun] = []
@@ -344,6 +419,7 @@ def main() -> int:
             env["TMP"] = run_tmp_dir.as_posix()
             env["TEMP"] = run_tmp_dir.as_posix()
             env["CUDA_VISIBLE_DEVICES"] = gpu
+            env["PDIFF_RUN_INDEX"] = str(run["index"])
             proc = subprocess.Popen(run["cmd"], env=env, cwd=str(repo_root))
             active.append(
                 ActiveRun(
@@ -353,7 +429,10 @@ def main() -> int:
                     proc=proc,
                 )
             )
-            print(f"[start #{run['index']}] gpu={gpu} pid={proc.pid}")
+            print(
+                f"[start #{run['index']}] gpu={gpu} pid={proc.pid} "
+                f"dispatch={dispatch_signature[:12]}"
+            )
 
         still_active: list[ActiveRun] = []
         for ar in active:
