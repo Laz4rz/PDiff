@@ -112,6 +112,14 @@ def _parse_gpus(raw_gpus: str | None) -> list[str]:
     return gpus
 
 
+def _build_gpu_slots(gpus: list[str], max_parallel: int) -> list[str]:
+    if max_parallel <= 0:
+        raise ValueError("max_parallel must be >= 1")
+    # Round-robin GPU assignment to allow oversubscription when
+    # max_parallel > len(gpus), e.g. 8 workers on 4 GPUs.
+    return [gpus[idx % len(gpus)] for idx in range(max_parallel)]
+
+
 def _normalized_override_key(override: str) -> str:
     key = override.split("=", 1)[0]
     return key.lstrip("+~")
@@ -209,7 +217,10 @@ def main() -> int:
         "--max-parallel",
         type=int,
         default=None,
-        help="Maximum concurrent runs (default: number of GPUs).",
+        help=(
+            "Maximum concurrent runs (default: number of GPUs). "
+            "Can be larger than GPU count to oversubscribe in round-robin."
+        ),
     )
     parser.add_argument(
         "--sweep-dir",
@@ -303,7 +314,8 @@ def main() -> int:
 
     gpus = _parse_gpus(args.gpus)
     max_parallel = args.max_parallel if args.max_parallel is not None else len(gpus)
-    max_parallel = max(1, min(max_parallel, len(gpus)))
+    max_parallel = max(1, max_parallel)
+    gpu_slots = _build_gpu_slots(gpus, max_parallel)
 
     runs: list[dict[str, Any]] = []
     for idx, combo in enumerate(combinations):
@@ -345,12 +357,15 @@ def main() -> int:
         "axes": {k: v for k, v in axes},
         "num_runs": len(runs),
         "gpus": gpus,
+        "gpu_slots": gpu_slots,
         "max_parallel": max_parallel,
         "runs": runs,
     }
 
     print(
-        f"Planned {len(runs)} runs from axes {keys} | gpus={gpus} | max_parallel={max_parallel}"
+        "Planned "
+        f"{len(runs)} runs from axes {keys} | gpus={gpus} | "
+        f"gpu_slots={gpu_slots} | max_parallel={max_parallel}"
     )
     print(f"Run root: {sweep_root}")
 
@@ -380,7 +395,7 @@ def main() -> int:
         json.dump(manifest, fp, indent=2)
     print(f"Dispatch signature: {dispatch_signature[:12]}")
     pending = runs.copy()
-    available_gpus = gpus.copy()
+    available_gpus = gpu_slots.copy()
     active: list[ActiveRun] = []
     failed = False
 
