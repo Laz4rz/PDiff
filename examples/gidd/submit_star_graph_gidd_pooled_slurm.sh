@@ -1,26 +1,106 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="${REPO_ROOT:-$(cd -- "${SCRIPT_DIR}/../.." && pwd)}"
 cd "${REPO_ROOT}" || exit 1
 
 CONFIG_NAME="${CONFIG_NAME:-gidd_star_graph_constant_lr_sweep}"
-
-JOB_NAME="${JOB_NAME:-gidd-star-pool}"
-TIME_LIMIT="${TIME_LIMIT:-04:00:00}"
-GPUS_PER_NODE="${GPUS_PER_NODE:-4}"
-CPUS_PER_TASK="${CPUS_PER_TASK:-16}"
-MEM_GB="${MEM_GB:-64}"
-PARTITION="${PARTITION:-normal}"
-ACCOUNT="${ACCOUNT:-a137}"
-QOS="${QOS:-}"
-CONSTRAINT="${CONSTRAINT:-}"
-SBATCH_LOG_DIR="${SBATCH_LOG_DIR:-${REPO_ROOT}/outputs/slurm_logs}"
 DRY_RUN="${DRY_RUN:-0}"
-SLURM_ENVIRONMENT="${SLURM_ENVIRONMENT:-uni-d2}"
+PYTHON_BIN="${PYTHON_BIN:-python}"
+if ! command -v "${PYTHON_BIN}" >/dev/null 2>&1; then
+  if command -v python3 >/dev/null 2>&1; then
+    PYTHON_BIN="python3"
+  else
+    echo "No usable Python interpreter found in PATH (tried ${PYTHON_BIN} and python3)." >&2
+    exit 1
+  fi
+fi
 
-SWEEP_MAX_PARALLEL="${SWEEP_MAX_PARALLEL:-${GPUS_PER_NODE}}"
-SWEEP_GPUS="${SWEEP_GPUS:-}"
+hydra_overrides=("$@")
+
+# Read pooled Slurm defaults from the selected Hydra config.
+cfg_exports="$(
+  "${PYTHON_BIN}" - "${REPO_ROOT}" "${CONFIG_NAME}" "${hydra_overrides[@]}" <<'PY'
+import shlex
+import sys
+from pathlib import Path
+
+try:
+    from hydra import compose, initialize_config_dir
+    from omegaconf import OmegaConf
+except ModuleNotFoundError as exc:
+    raise SystemExit(
+        "Missing Python dependency for config composition. "
+        "Set PYTHON_BIN to an environment with hydra-core and omegaconf installed."
+    ) from exc
+
+repo_root = Path(sys.argv[1])
+config_name = sys.argv[2]
+overrides = sys.argv[3:]
+config_dir = repo_root / "configs"
+
+with initialize_config_dir(version_base=None, config_dir=str(config_dir)):
+    cfg = compose(
+        config_name=config_name,
+        overrides=overrides,
+        return_hydra_config=True,
+    )
+
+pool_cfg = OmegaConf.to_container(cfg.get("pooled_slurm"), resolve=True) or {}
+if not isinstance(pool_cfg, dict):
+    raise SystemExit("Expected 'pooled_slurm' to be a mapping in config.")
+
+required = ("job_name", "time_limit", "cpus_per_task", "gpus_per_node", "sbatch_log_dir")
+missing = [key for key in required if pool_cfg.get(key) in (None, "")]
+if missing:
+    raise SystemExit(
+        "Missing required pooled_slurm settings in config: " + ", ".join(missing)
+    )
+
+def emit(name: str, value) -> None:
+    if value is None:
+        value = ""
+    print(f"{name}={shlex.quote(str(value))}")
+
+emit("CFG_JOB_NAME", pool_cfg.get("job_name"))
+emit("CFG_TIME_LIMIT", pool_cfg.get("time_limit"))
+emit("CFG_GPUS_PER_NODE", pool_cfg.get("gpus_per_node"))
+emit("CFG_CPUS_PER_TASK", pool_cfg.get("cpus_per_task"))
+emit("CFG_MEM_GB", pool_cfg.get("mem_gb"))
+emit("CFG_PARTITION", pool_cfg.get("partition"))
+emit("CFG_ACCOUNT", pool_cfg.get("account"))
+emit("CFG_QOS", pool_cfg.get("qos"))
+emit("CFG_CONSTRAINT", pool_cfg.get("constraint"))
+emit("CFG_SBATCH_LOG_DIR", pool_cfg.get("sbatch_log_dir"))
+emit("CFG_SLURM_ENVIRONMENT", pool_cfg.get("slurm_environment"))
+emit("CFG_SWEEP_MAX_PARALLEL", pool_cfg.get("sweep_max_parallel"))
+emit("CFG_SWEEP_GPUS", pool_cfg.get("sweep_gpus"))
+emit("CFG_SWEEP_LIMIT", pool_cfg.get("sweep_limit"))
+emit("CFG_SWEEP_DIR", pool_cfg.get("sweep_dir"))
+PY
+)"
+eval "${cfg_exports}"
+
+JOB_NAME="${JOB_NAME:-${CFG_JOB_NAME}}"
+TIME_LIMIT="${TIME_LIMIT:-${CFG_TIME_LIMIT}}"
+GPUS_PER_NODE="${GPUS_PER_NODE:-${CFG_GPUS_PER_NODE}}"
+CPUS_PER_TASK="${CPUS_PER_TASK:-${CFG_CPUS_PER_TASK}}"
+MEM_GB="${MEM_GB:-${CFG_MEM_GB}}"
+PARTITION="${PARTITION:-${CFG_PARTITION}}"
+ACCOUNT="${ACCOUNT:-${CFG_ACCOUNT}}"
+QOS="${QOS:-${CFG_QOS}}"
+CONSTRAINT="${CONSTRAINT:-${CFG_CONSTRAINT}}"
+SBATCH_LOG_DIR="${SBATCH_LOG_DIR:-${CFG_SBATCH_LOG_DIR}}"
+if [[ "${SBATCH_LOG_DIR}" != /* ]]; then
+  SBATCH_LOG_DIR="${REPO_ROOT}/${SBATCH_LOG_DIR}"
+fi
+SLURM_ENVIRONMENT="${SLURM_ENVIRONMENT:-${CFG_SLURM_ENVIRONMENT}}"
+SWEEP_MAX_PARALLEL="${SWEEP_MAX_PARALLEL:-${CFG_SWEEP_MAX_PARALLEL}}"
+SWEEP_GPUS="${SWEEP_GPUS:-${CFG_SWEEP_GPUS}}"
+SWEEP_LIMIT="${SWEEP_LIMIT:-${CFG_SWEEP_LIMIT}}"
+SWEEP_DIR="${SWEEP_DIR:-${CFG_SWEEP_DIR}}"
+
 if [[ -z "${SWEEP_GPUS}" ]]; then
   last_gpu="$((GPUS_PER_NODE - 1))"
   if (( last_gpu < 0 )); then
@@ -29,14 +109,22 @@ if [[ -z "${SWEEP_GPUS}" ]]; then
   fi
   SWEEP_GPUS="$(seq -s, 0 "${last_gpu}")"
 fi
-SWEEP_LIMIT="${SWEEP_LIMIT:-}"
-SWEEP_DIR="${SWEEP_DIR:-}"
+if [[ -z "${SWEEP_MAX_PARALLEL}" ]]; then
+  SWEEP_MAX_PARALLEL="${GPUS_PER_NODE}"
+fi
 
 mkdir -p "${SBATCH_LOG_DIR}"
 
+POOL_SWEEP_RUNNER="${REPO_ROOT}/scripts/hydra_sweep_gpu_pool.py"
+if [[ ! -f "${POOL_SWEEP_RUNNER}" ]]; then
+  echo "Expected pooled sweep runner at ${POOL_SWEEP_RUNNER}, but it was not found." >&2
+  echo "Set REPO_ROOT to your PDiff checkout before submitting." >&2
+  exit 1
+fi
+
 cmd=(
-  "python"
-  scripts/hydra_sweep_gpu_pool.py
+  "${PYTHON_BIN}"
+  "${POOL_SWEEP_RUNNER}"
   --config-name "${CONFIG_NAME}"
   --gpus "${SWEEP_GPUS}"
   --max-parallel "${SWEEP_MAX_PARALLEL}"
@@ -55,7 +143,7 @@ done
 
 quoted_cmd="$(printf '%q ' "${cmd[@]}")"
 if [[ -n "${SLURM_ENVIRONMENT}" ]]; then
-  wrap_cmd="cd ${REPO_ROOT@Q} && srun --environment ${SLURM_ENVIRONMENT@Q} ${quoted_cmd}"
+  wrap_cmd="cd ${REPO_ROOT@Q} && srun --environment ${SLURM_ENVIRONMENT@Q} --chdir ${REPO_ROOT@Q} ${quoted_cmd}"
 else
   wrap_cmd="cd ${REPO_ROOT@Q} && ${quoted_cmd}"
 fi

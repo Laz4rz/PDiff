@@ -85,6 +85,42 @@ def _parse_gpus(raw_gpus: str | None) -> list[str]:
     return gpus
 
 
+def _inject_wandb_api_key(
+    env: dict[str, str], configured_token_file: str | None = None
+) -> None:
+    if env.get("WANDB_API_KEY", "").strip():
+        return
+
+    token_file = env.get("WANDB_TOKEN_FILE") or configured_token_file
+    if not token_file:
+        print(
+            "Warning: WANDB_API_KEY is unset and no token file is configured "
+            "(set WANDB_TOKEN_FILE or pooled_slurm.wandb_token_file)."
+        )
+        return
+    token_path = Path(token_file).expanduser()
+
+    try:
+        token = token_path.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        print(
+            "Warning: WANDB_API_KEY is unset and token file could not be read: "
+            f"{token_path} ({exc})"
+        )
+        return
+
+    if not token:
+        print(
+            "Warning: WANDB_API_KEY is unset and token file is empty: "
+            f"{token_path}"
+        )
+        return
+
+    env["WANDB_API_KEY"] = token
+    env["WANDB_TOKEN_FILE"] = str(token_path)
+    print(f"Loaded WANDB_API_KEY from {token_path}.")
+
+
 @dataclass
 class ActiveRun:
     index: int
@@ -163,6 +199,17 @@ def main() -> int:
     if not isinstance(sweeper_params, dict) or not sweeper_params:
         raise SystemExit("No hydra.sweeper.params found in config.")
 
+    pooled_cfg = OmegaConf.to_container(cfg.get("pooled_slurm"), resolve=True) or {}
+    configured_wandb_token_file: str | None = None
+    configured_cache_root: str | None = None
+    if isinstance(pooled_cfg, dict):
+        token_value = pooled_cfg.get("wandb_token_file")
+        if token_value not in (None, ""):
+            configured_wandb_token_file = str(token_value)
+        cache_root_value = pooled_cfg.get("cache_root")
+        if cache_root_value not in (None, ""):
+            configured_cache_root = str(cache_root_value)
+
     axes: list[tuple[str, list[str]]] = []
     for key, raw_value in sweeper_params.items():
         values = _parse_axis_values(raw_value)
@@ -186,13 +233,27 @@ def main() -> int:
         sweep_root = (repo_root / sweep_root).resolve()
     sweep_root.mkdir(parents=True, exist_ok=True)
 
+    base_cache_dir = Path(configured_cache_root or str(cfg.data.cache_dir)).expanduser()
+    if not base_cache_dir.is_absolute():
+        base_cache_dir = (repo_root / base_cache_dir).resolve()
+    base_cache_dir = base_cache_dir / sweep_root.name
+    tmp_base = Path(
+        os.environ.get("SLURM_TMPDIR") or os.environ.get("TMPDIR") or "/tmp"
+    ).expanduser()
+    pool_tmp_root = tmp_base / f"pdiff-pool-{os.getpid()}"
+
     gpus = _parse_gpus(args.gpus)
     max_parallel = args.max_parallel if args.max_parallel is not None else len(gpus)
     max_parallel = max(1, min(max_parallel, len(gpus)))
 
     runs: list[dict[str, Any]] = []
     for idx, combo in enumerate(combinations):
-        per_run_overrides = [f"{k}={v}" for k, v in zip(keys, combo)]
+        run_cache_dir = base_cache_dir / f"pool-{idx:04d}"
+        run_tmp_dir = pool_tmp_root / f"run-{idx:04d}"
+        per_run_overrides = [
+            f"data.cache_dir={run_cache_dir.as_posix()}",
+            *[f"{k}={v}" for k, v in zip(keys, combo)],
+        ]
         run_dir = sweep_root / f"{idx:04d}"
         cmd = [
             args.python_bin,
@@ -210,6 +271,8 @@ def main() -> int:
                 "index": idx,
                 "overrides": per_run_overrides,
                 "run_dir": run_dir.as_posix(),
+                "cache_dir": run_cache_dir.as_posix(),
+                "tmp_dir": run_tmp_dir.as_posix(),
                 "cmd": cmd,
             }
         )
@@ -238,6 +301,9 @@ def main() -> int:
             print(f"[dry-run #{run['index']}] {' '.join(run['cmd'])}")
         return 0
 
+    repo_src = (repo_root / "src").resolve()
+    base_env = os.environ.copy()
+    _inject_wandb_api_key(base_env, configured_wandb_token_file)
     pending = runs.copy()
     available_gpus = gpus.copy()
     active: list[ActiveRun] = []
@@ -263,9 +329,22 @@ def main() -> int:
         while pending and available_gpus and len(active) < max_parallel:
             run = pending.pop(0)
             gpu = available_gpus.pop(0)
-            env = os.environ.copy()
+            env = base_env.copy()
+            # Run from source checkout without requiring `pip install -e .`.
+            if repo_src.is_dir():
+                existing_pythonpath = env.get("PYTHONPATH")
+                if existing_pythonpath:
+                    env["PYTHONPATH"] = f"{repo_src}{os.pathsep}{existing_pythonpath}"
+                else:
+                    env["PYTHONPATH"] = str(repo_src)
+            run_tmp_dir = Path(run["tmp_dir"])
+            run_tmp_dir.mkdir(parents=True, exist_ok=True)
+            # Keep temporary multiprocess artifacts off NFS mounts.
+            env["TMPDIR"] = run_tmp_dir.as_posix()
+            env["TMP"] = run_tmp_dir.as_posix()
+            env["TEMP"] = run_tmp_dir.as_posix()
             env["CUDA_VISIBLE_DEVICES"] = gpu
-            proc = subprocess.Popen(run["cmd"], env=env)
+            proc = subprocess.Popen(run["cmd"], env=env, cwd=str(repo_root))
             active.append(
                 ActiveRun(
                     index=run["index"],

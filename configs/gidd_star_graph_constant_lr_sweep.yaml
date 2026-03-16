@@ -33,6 +33,25 @@ launch_presets:
     tasks_per_node: 1
     mem_gb: 32
 
+pooled_slurm:
+  job_name: gidd-star-pool
+  time_limit: "04:00:00"
+  cpus_per_task: 16
+  gpus_per_node: 4
+  mem_gb: 64
+  partition: normal
+  account: a137
+  qos: null
+  constraint: null
+  slurm_environment: uni-d2
+  sbatch_log_dir: outputs/slurm_logs
+  sweep_max_parallel: ${.gpus_per_node}
+  sweep_gpus: null
+  sweep_limit: null
+  sweep_dir: null
+  cache_root: ${oc.env:SLURM_TMPDIR,/tmp}/discrete_diffusion
+  wandb_token_file: /users/mboronski/.secrets/wandb_token
+
 data:
   tokenizer_name_or_path: ascii-char
   dataset_config:
