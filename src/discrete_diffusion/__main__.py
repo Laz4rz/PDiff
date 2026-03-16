@@ -85,7 +85,19 @@ def _print_config(
 
 @hydra.main(version_base=None, config_path=CONFIG_PATH, config_name="config")
 def main(config):
-    L.seed_everything(config.seed)
+    force_deterministic_algos = bool(
+        omegaconf.OmegaConf.select(
+            config, "training.force_deterministic_algorithms", default=False
+        )
+    )
+    if force_deterministic_algos:
+        os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+    torch.use_deterministic_algorithms(force_deterministic_algos)
+    torch.backends.cudnn.deterministic = force_deterministic_algos
+    if force_deterministic_algos:
+        torch.backends.cudnn.benchmark = False
+
+    L.seed_everything(config.seed, workers=True)
     should_print_config = omegaconf.OmegaConf.select(
         config, "logging.print_config", default=True
     )

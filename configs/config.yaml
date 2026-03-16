@@ -41,6 +41,7 @@ training:
   loss_precision: 'bf16'  # bf16, float32, float64
   finetune_path: ''
   torch_compile: false
+  force_deterministic_algorithms: false
   resample: False
   sampling_eps: 1e-3
   sampling_eps_min: 1e-3
