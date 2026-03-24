@@ -17,6 +17,7 @@ import hashlib
 import itertools
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -262,6 +263,11 @@ def main() -> int:
             overrides=args.override,
             return_hydra_config=True,
         )
+        frozen_task_cfg = compose(
+            config_name=args.config_name,
+            overrides=args.override,
+            return_hydra_config=False,
+        )
 
     sweeper_params = OmegaConf.to_container(
         cfg.hydra.sweeper.params, resolve=True
@@ -311,6 +317,17 @@ def main() -> int:
         os.environ.get("SLURM_TMPDIR") or os.environ.get("TMPDIR") or "/tmp"
     ).expanduser()
     pool_tmp_root = tmp_base / f"pdiff-pool-{os.getpid()}"
+    pool_tmp_root.mkdir(parents=True, exist_ok=True)
+
+    frozen_config_name = f"_pooled_frozen_{args.config_name}"
+    frozen_config_dir = pool_tmp_root / "config_snapshot"
+    frozen_config_dir.mkdir(parents=True, exist_ok=True)
+    frozen_config_path = frozen_config_dir / f"{frozen_config_name}.yaml"
+    # Freeze task config + user overrides without forcing resolution of Hydra
+    # runtime fields (e.g. hydra.job.num), which only exist during execution.
+    OmegaConf.save(config=frozen_task_cfg, f=str(frozen_config_path), resolve=False)
+    frozen_config_audit_path = sweep_root / "pool_config_snapshot.yaml"
+    shutil.copy2(frozen_config_path, frozen_config_audit_path)
 
     gpus = _parse_gpus(args.gpus)
     max_parallel = args.max_parallel if args.max_parallel is not None else len(gpus)
@@ -330,9 +347,10 @@ def main() -> int:
             args.python_bin,
             "-m",
             args.module,
+            "--config-path",
+            frozen_config_dir.as_posix(),
             "--config-name",
-            args.config_name,
-            *args.override,
+            frozen_config_name,
             *per_run_overrides,
             "hydra.mode=RUN",
             f"hydra.run.dir={run_dir.as_posix()}",
@@ -359,6 +377,9 @@ def main() -> int:
         "gpus": gpus,
         "gpu_slots": gpu_slots,
         "max_parallel": max_parallel,
+        "frozen_config_name": frozen_config_name,
+        "frozen_config_path": frozen_config_path.as_posix(),
+        "frozen_config_audit_path": frozen_config_audit_path.as_posix(),
         "runs": runs,
     }
 
@@ -368,6 +389,7 @@ def main() -> int:
         f"gpu_slots={gpu_slots} | max_parallel={max_parallel}"
     )
     print(f"Run root: {sweep_root}")
+    print(f"Using frozen config snapshot: {frozen_config_path}")
 
     if args.dry_run:
         for run in runs:
