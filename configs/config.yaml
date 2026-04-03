@@ -61,9 +61,9 @@ eval:
   generate_samples: True
   run_validation_at_train_end: true
   train_end_validation_ckpt_path: last
-  train_end_validation_metrics_path: ${cwd:}/train_end_validation_metrics.json
+  train_end_validation_metrics_path: ${hydra:runtime.output_dir}/train_end_validation_metrics.json
   save_validation_samples: false
-  generated_samples_path: ${cwd:}/samples.json
+  generated_samples_path: ${hydra:runtime.output_dir}/samples.json
   results_json_path: null
   npz_path: null
 
@@ -112,7 +112,12 @@ hydra:
 
 checkpointing:
   # Use custom `save_dir` if, e.g., saving to S3 bucket, otherwise leave this parameter as is
-  save_dir: ${cwd:}/dummy_checkpoints
+  save_dir: ${hydra:runtime.output_dir}
   # Note: `checkpoints` path should correspond to `checkpoint_every_n_steps.dirpath`
   resume_from_ckpt: true
   resume_ckpt_path: ${.save_dir}/checkpoints/last.ckpt
+  clean_artifacts: false
+  clean_artifact_dirs:
+    - ${.save_dir}/checkpoints
+    - ${hydra:runtime.output_dir}/samples
+    - ${hydra:runtime.output_dir}/validation_samples

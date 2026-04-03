@@ -241,6 +241,7 @@ def get_dataset(
             attention_mask = []
             loss_mask = []
             accuracy_mask = []
+            noise_mask = []
             for p_ids, c_ids in zip(prefixes["input_ids"], completions["input_ids"]):
                 p_ids = list(p_ids)
                 c_ids = list(c_ids)
@@ -262,6 +263,7 @@ def get_dataset(
                 seq_attention_mask = [1] * len(seq_ids)
                 seq_loss_mask = [0] * len(p_ids) + [1] * len(c_ids)
                 seq_accuracy_mask = [0] * len(p_ids) + [1] * len(c_ids)
+                seq_noise_mask = [0] * len(p_ids) + [1] * len(c_ids)
 
                 pad_len = block_size - len(seq_ids)
                 if pad_len > 0:
@@ -269,16 +271,19 @@ def get_dataset(
                     seq_attention_mask += [0] * pad_len
                     seq_loss_mask += [1] * pad_len
                     seq_accuracy_mask += [0] * pad_len
+                    seq_noise_mask += [0] * pad_len
 
                 input_ids.append(seq_ids)
                 attention_mask.append(seq_attention_mask)
                 loss_mask.append(seq_loss_mask)
                 accuracy_mask.append(seq_accuracy_mask)
+                noise_mask.append(seq_noise_mask)
             return {
                 "input_ids": input_ids,
                 "attention_mask": attention_mask,
                 "loss_mask": loss_mask,
                 "accuracy_mask": accuracy_mask,
+                "noise_mask": noise_mask,
             }
 
         if dataset_name == "ptb":

@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 from pathlib import Path
 
 import hydra
@@ -27,6 +28,69 @@ def _to_jsonable(value):
     if isinstance(value, (int, float, bool, str)) or value is None:
         return value
     return str(value)
+
+
+def _cleanup_artifact_dirs(config, logger) -> None:
+    clean_artifacts = bool(
+        omegaconf.OmegaConf.select(
+            config, "checkpointing.clean_artifacts", default=False
+        )
+    )
+    if not clean_artifacts:
+        return
+
+    raw_dirs = omegaconf.OmegaConf.select(
+        config, "checkpointing.clean_artifact_dirs", default=[]
+    )
+    if raw_dirs is None:
+        return
+    if isinstance(raw_dirs, (str, Path)):
+        raw_dirs = [raw_dirs]
+
+    cleanup_dirs: list[Path] = []
+    for raw_dir in raw_dirs:
+        if raw_dir is None:
+            continue
+        path_str = str(raw_dir).strip()
+        if not path_str:
+            continue
+        cleanup_dirs.append(Path(path_str).expanduser())
+
+    if not cleanup_dirs:
+        return
+
+    unique_dirs: list[Path] = []
+    seen: set[Path] = set()
+    for path in cleanup_dirs:
+        try:
+            resolved = path.resolve()
+        except OSError:
+            resolved = path.absolute()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        unique_dirs.append(resolved)
+
+    # Remove deeper paths first in case multiple configured paths are nested.
+    unique_dirs.sort(key=lambda p: len(str(p)), reverse=True)
+
+    for path in unique_dirs:
+        if not path.exists():
+            continue
+        if not path.is_dir():
+            logger.warning(
+                "Skipping cleanup target (not a directory): %s",
+                path,
+            )
+            continue
+        if path in {Path("/"), Path.home()}:
+            logger.warning("Skipping unsafe cleanup target: %s", path)
+            continue
+        try:
+            shutil.rmtree(path)
+            logger.info("Removed artifact directory: %s", path)
+        except OSError as exc:
+            logger.warning("Failed to remove artifact directory %s: %s", path, exc)
 
 
 def train(config):
@@ -139,3 +203,6 @@ def train(config):
             metrics_file.parent.mkdir(parents=True, exist_ok=True)
             with open(metrics_file, "w", encoding="utf-8") as fp:
                 json.dump(payload, fp, indent=2, sort_keys=True)
+
+    if trainer.is_global_zero:
+        _cleanup_artifact_dirs(config, logger)

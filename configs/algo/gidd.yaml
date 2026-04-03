@@ -15,6 +15,11 @@ loss_weighting: dynamic  # dynamic | clip | none
 min_loss_weight: 0.0
 max_loss_weight: 2.0
 
+# Stage-specific masks (batch keys)
+loss_mask_key: loss_mask
+accuracy_mask_key: accuracy_mask
+noise_mask_key: noise_mask
+
 # Keep model dims in configs/model/*.yaml (e.g., small.yaml)
 sampler:
   _target_: discrete_diffusion.sampling.gidd.GIDDSampler

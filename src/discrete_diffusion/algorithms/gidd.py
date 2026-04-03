@@ -343,6 +343,7 @@ class GIDD(trainer_base.TrainerBase):
         current_accumulation_step=None,
         train_mode=False,
         accuracy_tokens=None,
+        noise_tokens=None,
     ):
         input_tokens, valid_tokens = self._process_model_input(x0, valid_tokens)
         loss, pred_tokens = self.nll(
@@ -350,6 +351,7 @@ class GIDD(trainer_base.TrainerBase):
             current_accumulation_step,
             train_mode,
             valid_tokens=valid_tokens,
+            noise_tokens=noise_tokens,
             return_predictions=True,
         )
         assert loss.ndim == 2
@@ -371,6 +373,11 @@ class GIDD(trainer_base.TrainerBase):
             raise ValueError(
                 "GIDD shape mismatch: "
                 f"loss={loss.shape}, accuracy={accuracy_tokens.shape}"
+            )
+        if noise_tokens is not None and noise_tokens.shape != expected_shape:
+            raise ValueError(
+                "GIDD shape mismatch: "
+                f"loss={loss.shape}, noise={noise_tokens.shape}"
             )
 
         nlls = (loss * valid_tokens).sum()
@@ -406,14 +413,28 @@ class GIDD(trainer_base.TrainerBase):
 
     def training_step(self, batch, batch_idx):
         current_accumulation_step = batch_idx % self.trainer.accumulate_grad_batches
-        valid_tokens = batch.get("loss_mask", batch["attention_mask"])
-        accuracy_tokens = batch.get("accuracy_mask", None)
+        loss_mask_key = getattr(self.config.algo, "loss_mask_key", "loss_mask")
+        accuracy_mask_key = getattr(self.config.algo, "accuracy_mask_key", "accuracy_mask")
+        noise_mask_key = getattr(self.config.algo, "noise_mask_key", "noise_mask")
+
+        valid_tokens = batch.get(
+            loss_mask_key,
+            batch.get("loss_mask", batch["attention_mask"]),
+        )
+        accuracy_tokens = batch.get(
+            accuracy_mask_key,
+            batch.get("accuracy_mask", None),
+        )
+        noise_tokens = None
+        if noise_mask_key is not None:
+            noise_tokens = batch.get(noise_mask_key, batch.get("noise_mask", None))
         losses = self._loss(
             batch["input_ids"],
             valid_tokens,
             current_accumulation_step,
             train_mode=True,
             accuracy_tokens=accuracy_tokens,
+            noise_tokens=noise_tokens,
         )
         self.metrics.update_train(
             losses.nlls,
@@ -465,10 +486,26 @@ class GIDD(trainer_base.TrainerBase):
         )
 
     def validation_step(self, batch, batch_idx):
-        valid_tokens = batch.get("loss_mask", batch["attention_mask"])
-        accuracy_tokens = batch.get("accuracy_mask", None)
+        loss_mask_key = getattr(self.config.algo, "loss_mask_key", "loss_mask")
+        accuracy_mask_key = getattr(self.config.algo, "accuracy_mask_key", "accuracy_mask")
+        noise_mask_key = getattr(self.config.algo, "noise_mask_key", "noise_mask")
+
+        valid_tokens = batch.get(
+            loss_mask_key,
+            batch.get("loss_mask", batch["attention_mask"]),
+        )
+        accuracy_tokens = batch.get(
+            accuracy_mask_key,
+            batch.get("accuracy_mask", None),
+        )
+        noise_tokens = None
+        if noise_mask_key is not None:
+            noise_tokens = batch.get(noise_mask_key, batch.get("noise_mask", None))
         losses = self._loss(
-            batch["input_ids"], valid_tokens, accuracy_tokens=accuracy_tokens
+            batch["input_ids"],
+            valid_tokens,
+            accuracy_tokens=accuracy_tokens,
+            noise_tokens=noise_tokens,
         )
         self.metrics.update_valid(
             losses.nlls,
@@ -604,10 +641,17 @@ class GIDD(trainer_base.TrainerBase):
         current_accumulation_step=None,
         train_mode=False,
         valid_tokens=None,
+        noise_tokens=None,
         return_predictions=False,
     ):
         t = self._sample_t(input_tokens.shape[0])
         z_t = self.hybrid_noise.sample_zt(input_tokens, t)
+        noise_mask_source = noise_tokens if noise_tokens is not None else valid_tokens
+        if noise_mask_source is not None:
+            noise_mask = noise_mask_source.to(
+                device=input_tokens.device, dtype=torch.bool
+            )
+            z_t = torch.where(noise_mask, z_t, input_tokens)
 
         alpha_t = self._loglinear.alpha_t(t)
         sigma = self._sigma_from_alphat(alpha_t.unsqueeze(-1))
