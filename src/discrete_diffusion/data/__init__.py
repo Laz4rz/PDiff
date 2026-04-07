@@ -1,6 +1,7 @@
 # Re-export all public APIs from the split modules
 from .datasets import (
     generate_synthetic_dataset,
+    get_brevo_dataset,
     get_lambada_test_dataset,
     get_text8_dataset,
     get_star_graph_dataset
@@ -27,6 +28,7 @@ __all__ = [
     "AsciiCharTokenizer",
     "SyntheticTokenizer",
     "generate_synthetic_dataset",
+    "get_brevo_dataset",
     "get_lambada_test_dataset",
     "get_text8_dataset",
     "wt_detokenizer",

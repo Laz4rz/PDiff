@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 import json
 import os
 from pathlib import Path
 import shutil
+from typing import TypedDict
 import urllib
 import zipfile
 
@@ -14,22 +14,30 @@ import datasets
 import fsspec
 import numpy as np
 import requests
-import torch
 from tqdm import tqdm
 
 from .. import utils
+from .generators.brevo import topsort_data
 
 LOGGER = utils.get_logger(__name__)
 
 __all__ = [
     "generate_synthetic_dataset",
     "get_star_graph_dataset",
+    "get_brevo_dataset",
     "generate_prefix_dataset",
     "get_lambada_test_dataset",
     "get_text8_dataset",
 ]
 
-def get_star_graph_dataset(dataset_config: Mapping[str, object] | None = None):
+
+class StarGraphDatasetConfig(TypedDict, total=False):
+    data_dir: str | Path
+    train_file: str | Path
+    validation_file: str | Path
+
+
+def get_star_graph_dataset(dataset_config: StarGraphDatasetConfig | None = None):
     repo_root = Path(__file__).resolve().parents[3]
     default_data_dir = repo_root / "data" / "star"
     config = dict(dataset_config or {})
@@ -80,6 +88,84 @@ def get_star_graph_dataset(dataset_config: Mapping[str, object] | None = None):
         }
     )
 
+class BrevoDatasetConfig(TypedDict, total=False):
+    training_samples: int
+    evaluation_samples: int
+    graph_N: int
+    enforce_n_for_training: bool
+    multi_token: bool
+
+def get_brevo_dataset(
+    dataset_config: BrevoDatasetConfig | None = None,
+) -> datasets.DatasetDict:
+    config = dict(dataset_config or {})
+    training_samples = int(config.get("training_samples", 200_000))
+    evaluation_samples = int(config.get("evaluation_samples", 20_000))
+    graph_N = int(config.get("graph_N", 110))
+    enforce_n_for_training = bool(config.get("enforce_n_for_training", False))
+    multi_token = bool(config.get("multi_token", False))
+
+    if graph_N < 3:
+        raise ValueError(f"`graph_N` must be >= 3, got {graph_N}")
+    if training_samples <= 0 or evaluation_samples <= 0:
+        raise ValueError("`training_samples` and `evaluation_samples` must be > 0")
+
+    def _tokens_to_text(tokens: list[int], add_trailing_space: bool = False) -> str:
+        if not tokens:
+            return ""
+        text = " ".join(str(token) for token in tokens)
+        if add_trailing_space:
+            text += " "
+        return text
+
+    def _build_split(num_samples: int, enforce_n: bool, split: str) -> datasets.Dataset:
+        prefixes: list[str] = []
+        completions: list[str] = []
+
+        for _ in tqdm(range(num_samples), desc=f"Generating BREVO {split}"):
+            sample = topsort_data(N=graph_N, multi=multi_token, enforce_n=enforce_n)
+            token_ids = [int(token) for token in sample[0]]
+            labels = [int(label) for label in sample["label"]]
+
+            if len(token_ids) != len(labels):
+                raise ValueError(
+                    "BREVO sample has mismatched token and label lengths: "
+                    f"{len(token_ids)} != {len(labels)}"
+                )
+
+            prefix_tokens = [
+                token for token, label in zip(token_ids, labels, strict=True) if label == 0
+            ]
+            completion_tokens = [
+                token for token, label in zip(token_ids, labels, strict=True) if label == 1
+            ]
+
+            prefixes.append(
+                _tokens_to_text(prefix_tokens, add_trailing_space=bool(completion_tokens))
+            )
+            completions.append(_tokens_to_text(completion_tokens))
+
+        return datasets.Dataset.from_dict(
+            {
+                "prefixes": prefixes,
+                "completions": completions,
+            }
+        )
+
+    train_ds = _build_split(
+        num_samples=training_samples,
+        enforce_n=enforce_n_for_training,
+        split="train",
+    )
+    valid_ds = _build_split(
+        num_samples=evaluation_samples,
+        enforce_n=True,  # hardest-case eval: n = N
+        split="validation",
+    )
+
+    return datasets.DatasetDict({"train": train_ds, "validation": valid_ds})
+
+
 def _generate_synthetic_data(dataset_size, seq_len, vocab_size):
     dataset = np.zeros((dataset_size, seq_len), dtype=int)
     dataset[:, 0] = vocab_size - 2  # bos
@@ -98,6 +184,7 @@ def _generate_synthetic_data(dataset_size, seq_len, vocab_size):
 def generate_synthetic_dataset(
     train_dataset_size, validation_dataset_size, seq_len, vocab_size
 ):
+    import torch
     np.random.seed(42)
     train_data = torch.from_numpy(
         _generate_synthetic_data(train_dataset_size, seq_len, vocab_size)

@@ -13,6 +13,7 @@ import transformers
 
 from .. import utils
 from .datasets import (
+    get_brevo_dataset,
     generate_prefix_dataset,
     generate_synthetic_dataset,
     get_lambada_test_dataset,
@@ -50,13 +51,21 @@ def get_dataset(
     insert_eos=True,
     insert_special_tokens=True,
     block_size=1024,
-    num_proc=len(os.sched_getaffinity(0)),
+    num_proc=None,
     streaming=False,
     revision: Optional[str] = None,
     min_length: int = 0,
     chunking: str = "none",
     dataset_config: Optional[dict] = None,
+    tokenize=True,
 ):
+    # fast fix for linux/macos
+    if num_proc is None:
+        try:
+            num_proc = len(os.sched_getaffinity(0)) - 1
+        except AttributeError:
+            num_proc = max(1, os.cpu_count() - 1)
+
     chunking_mode = (chunking or "none").lower()
     if chunking_mode not in {"none", "double_newline"}:
         raise ValueError(f"Unsupported chunking mode: {chunking_mode}")
@@ -171,6 +180,10 @@ def get_dataset(
                 "star_graph dataset generation does not support streaming."
             )
         dataset = get_star_graph_dataset(dataset_config=dataset_config)
+    elif dataset_name == "brevo":
+        if streaming:
+            raise ValueError("brevo dataset generation does not support streaming.")
+        dataset = get_brevo_dataset(dataset_config=dataset_config)
     elif dataset_name == "prefix":
         if streaming:
             raise ValueError("prefix dataset generation does not support streaming.")
@@ -225,30 +238,60 @@ def get_dataset(
 
     def preprocess_and_tokenize(example):
         if "prefixes" in example and "completions" in example:
-            prefixes = tokenizer(
-                example["prefixes"],
-                add_special_tokens=False,
-                return_attention_mask=False,
-                return_token_type_ids=False,
-            )
-            completions = tokenizer(
-                example["completions"],
-                add_special_tokens=False,
-                return_attention_mask=False,
-                return_token_type_ids=False,
-            )
+            def _as_int_token_ids(value):
+                if isinstance(value, str):
+                    stripped = value.strip()
+                    if not stripped:
+                        return []
+                    return [int(tok) for tok in stripped.split()]
+                if isinstance(value, (list, tuple)):
+                    return [int(tok) for tok in value]
+                if hasattr(value, "tolist"):
+                    converted = value.tolist()
+                    if isinstance(converted, list):
+                        return [int(tok) for tok in converted]
+                raise TypeError(
+                    f"Unsupported pretokenized sequence type: {type(value)!r}"
+                )
+
+            if tokenize:
+                prefixes = tokenizer(
+                    example["prefixes"],
+                    add_special_tokens=False,
+                    return_attention_mask=False,
+                    return_token_type_ids=False,
+                )
+                completions = tokenizer(
+                    example["completions"],
+                    add_special_tokens=False,
+                    return_attention_mask=False,
+                    return_token_type_ids=False,
+                )
+            else:
+                prefixes = {"input_ids": example["prefixes"]}
+                completions = {"input_ids": example["completions"]}
             input_ids = []
             attention_mask = []
             loss_mask = []
             accuracy_mask = []
             noise_mask = []
             for p_ids, c_ids in zip(prefixes["input_ids"], completions["input_ids"]):
-                p_ids = list(p_ids)
-                c_ids = list(c_ids)
-                if dataset_name in {"prefix", "star_graph"} and BOS is not None:
+                if tokenize:
+                    p_ids = list(p_ids)
+                    c_ids = list(c_ids)
+                else:
+                    p_ids = _as_int_token_ids(p_ids)
+                    c_ids = _as_int_token_ids(c_ids)
+
+                # BREVO tokenize=False uses native task IDs (already includes task markers),
+                # so avoid injecting tokenizer BOS/EOS again.
+                add_boundary_tokens = dataset_name in {"prefix", "star_graph"} or (
+                    dataset_name == "brevo" and tokenize
+                )
+                if add_boundary_tokens and BOS is not None:
                     if not p_ids or p_ids[0] != BOS:
                         p_ids = [BOS] + p_ids
-                if dataset_name in {"prefix", "star_graph"} and EOS is not None:
+                if add_boundary_tokens and EOS is not None:
                     if not c_ids or c_ids[-1] != EOS:
                         c_ids = c_ids + [EOS]
 

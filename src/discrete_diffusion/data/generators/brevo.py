@@ -317,8 +317,11 @@ def _sample_task_size(N):
     return rng.choices(_distribution_list_to_choose, weights=_distribution_p)[0]
 
 
-def topsort_data(N, multi=False):
-    n = _sample_task_size(N)
+def topsort_data(N, multi=False, enforce_n=False):
+    if not enforce_n:
+        n = _sample_task_size(N)
+    else:
+        n = N
 
     topo = TopoSortDepthStats(n, vocab_size=N)
     text, token_type, list_labels, depth = topo.generate_tokens(rng, multi=multi)
