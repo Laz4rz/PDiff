@@ -217,11 +217,28 @@ def get_dataset(
     else:
         detokenizer = None
 
-    EOS = tokenizer.eos_token_id
-    BOS = tokenizer.bos_token_id
+    brevo_pretokenized = dataset_name.startswith("brevo") and not tokenize
+    if brevo_pretokenized:
+        # BREVO tokenize=False path already provides integer IDs, so tolerate
+        # minimal tokenizer-like objects by falling back to task-native IDs.
+        bos_id = tokenizer.bos_token_id
+        eos_id = tokenizer.eos_token_id
+        pad_id = tokenizer.pad_token_id
 
-    tokenizer.padding_side = "right"
-    tokenizer.truncation_side = "right"
+        BOS = int(bos_id)
+        EOS = int(eos_id)
+        PAD = int(pad_id)
+
+        tok_len = len(tokenizer)
+
+    try:
+        tokenizer.padding_side = "right"
+    except Exception:
+        pass
+    try:
+        tokenizer.truncation_side = "right"
+    except Exception:
+        pass
 
     use_chunking = chunking_mode != "none"
     if use_chunking:
@@ -310,7 +327,7 @@ def get_dataset(
 
                 pad_len = block_size - len(seq_ids)
                 if pad_len > 0:
-                    seq_ids += [tokenizer.pad_token_id] * pad_len
+                    seq_ids += [PAD] * pad_len
                     seq_attention_mask += [0] * pad_len
                     seq_loss_mask += [1] * pad_len
                     seq_accuracy_mask += [0] * pad_len
