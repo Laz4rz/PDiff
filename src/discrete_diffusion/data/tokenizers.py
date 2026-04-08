@@ -38,6 +38,46 @@ class BrevoDummyTokenizer:
         self.pad_token_id = BREVO_PAD_TOKEN_ID
         self.mask_token_id = BREVO_MASK_TOKEN_ID
 
+        self.special_tokens_map = {
+            "bos_token": self.bos_token,
+            "eos_token": self.eos_token,
+            "pad_token": self.pad_token,
+            "mask_token": self.mask_token,
+            "cls_token": self.cls_token,
+            "sep_token": self.sep_token,
+        }
+        self.all_special_tokens = [
+            self.bos_token,
+            self.eos_token,
+            self.pad_token,
+            self.mask_token,
+        ]
+        self.all_special_ids = [
+            self.bos_token_id,
+            self.eos_token_id,
+            self.pad_token_id,
+            self.mask_token_id,
+        ]
+        self._special_id_to_token = {
+            self.bos_token_id: self.bos_token,
+            self.eos_token_id: self.eos_token,
+            self.pad_token_id: self.pad_token,
+            self.mask_token_id: self.mask_token,
+        }
+        self._special_token_to_id = {
+            self.bos_token: self.bos_token_id,
+            self.eos_token: self.eos_token_id,
+            self.pad_token: self.pad_token_id,
+            self.mask_token: self.mask_token_id,
+        }
+        # BREVO uses `bos-2` as a query delimiter marker in pretokenized streams.
+        self.query_sep_token = "[Q_SEP]"
+        self.query_sep_token_id = self.bos_token_id - 2
+        self._display_id_to_token = {
+            self.query_sep_token_id: self.query_sep_token,
+            **self._special_id_to_token,
+        }
+
         self.padding_side = "right"
         self.truncation_side = "right"
 
@@ -49,6 +89,23 @@ class BrevoDummyTokenizer:
 
     def encode(self, *args, **kwargs):
         raise NotImplementedError("BrevoDummyTokenizer does not support tokenization")
+
+    def convert_ids_to_tokens(self, ids):
+        if hasattr(ids, "tolist"):
+            ids = ids.tolist()
+        if isinstance(ids, (list, tuple)):
+            return [self.convert_ids_to_tokens(tok_id) for tok_id in ids]
+        token_id = int(ids)
+        return self._display_id_to_token.get(token_id, str(token_id))
+
+    def convert_tokens_to_ids(self, tokens):
+        if isinstance(tokens, (list, tuple)):
+            return [self.convert_tokens_to_ids(tok) for tok in tokens]
+        if tokens == self.query_sep_token:
+            return self.query_sep_token_id
+        if tokens in self._special_token_to_id:
+            return self._special_token_to_id[tokens]
+        return int(tokens)
 
     def decode(self, token_ids, skip_special_tokens: bool = False, **kwargs) -> str:
         del kwargs
