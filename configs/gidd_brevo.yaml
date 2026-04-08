@@ -3,7 +3,7 @@
 defaults:
   - config
   - override /data: brevo
-  - override /model: small
+  - override /model: tiny
   - override /algo: gidd
   - override /strategy: single-device
   - override /lr_scheduler: constant_warmup
@@ -13,13 +13,12 @@ data:
   streaming: False
   tokenizer_name_or_path: brevo-dummy
   dataset_config:
-    training_samples: 200000
+    training_samples: 100000
     evaluation_samples: 20000
     graph_N: 10
     enforce_n_for_training: False
     multi_token: False
     cached_streaming: True
-    cached_streaming_num_shards: 8
 
 algo:
   loss_type: gidd_constant_pi
@@ -36,7 +35,7 @@ trainer:
   max_epochs: 1
   max_steps: -1
   log_every_n_steps: 1
-  val_check_interval: 50
+  val_check_interval: 150
   limit_train_batches: 1.0
   limit_val_batches: 1.0
   precision: bf16-mixed
@@ -45,7 +44,9 @@ loader:
   global_batch_size: 256
   batch_size: 256
   eval_batch_size: 512
-  num_workers: 1
+  num_workers: 4
+  shuffle_train: false
+  shuffle_valid: false
 
 training:
   torch_compile: false

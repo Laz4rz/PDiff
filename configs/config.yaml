@@ -32,6 +32,8 @@ loader:
   eval_batch_size: ${div_up:${.eval_global_batch_size}, ${mul:${trainer.devices}, ${trainer.num_nodes}}}
   num_workers: 12
   pin_memory: True
+  shuffle_train: False
+  shuffle_valid: False
 
 training:
   ema: 0.9999

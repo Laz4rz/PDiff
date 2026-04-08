@@ -95,6 +95,7 @@ class BrevoDatasetConfig(TypedDict, total=False):
     graph_N: int
     enforce_n_for_training: bool
     multi_token: bool
+    cached_streaming: bool
 
 def get_brevo_dataset(
     dataset_config: BrevoDatasetConfig | None = None,

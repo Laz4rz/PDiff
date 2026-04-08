@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import functools
+import hashlib
+import json
 import os
 from typing import Optional
 
@@ -90,7 +92,43 @@ def get_dataset(
             f"{dataset_name}_{mode}_bs{block_size}_unwrapped"
             f"{chunk_tag}{eos_tag}{min_len_tag}.dat"
         )
+    processing_streaming = streaming
+    brevo_cfg = dict(dataset_config or {}) if dataset_name == "brevo" else {}
+    brevo_generation_cfg = (
+        {
+            "training_samples": int(brevo_cfg.get("training_samples", 200_000)),
+            "evaluation_samples": int(brevo_cfg.get("evaluation_samples", 20_000)),
+            "graph_N": int(brevo_cfg.get("graph_N", 110)),
+            "enforce_n_for_training": bool(
+                brevo_cfg.get("enforce_n_for_training", False)
+            ),
+            "multi_token": bool(brevo_cfg.get("multi_token", False)),
+            "tokenize": bool(tokenize),
+        }
+        if dataset_name == "brevo"
+        else {}
+    )
+    if dataset_name == "brevo":
+        # Include BREVO generation config in tokenized-cache key to avoid stale reuse
+        # when e.g. training_samples/graph_N changes.
+        brevo_cfg_key = hashlib.sha1(
+            json.dumps(brevo_generation_cfg, sort_keys=True).encode("utf-8")
+        ).hexdigest()[:12]
+        filename = filename.replace(".dat", f"_cfg{brevo_cfg_key}.dat")
     _path = os.path.join(cache_dir, filename)
+    brevo_cached_streaming = (
+        dataset_name == "brevo"
+        and streaming
+        and bool(brevo_cfg.get("cached_streaming", False))
+    )
+    if brevo_cached_streaming:
+        if utils.fsspec_exists(_path):
+            LOGGER.info(
+                "Loading BREVO cached tokenized Arrow split from: %s",
+                _path,
+            )
+            # Arrow datasets loaded from disk are memory-mapped by HF Datasets.
+            return datasets.load_from_disk(_path).with_format("torch")
 
     if utils.fsspec_exists(_path) and LOAD_FROM_CACHE:
         LOGGER.info("Loading data from: %s", _path)
@@ -186,14 +224,24 @@ def get_dataset(
             )
         dataset = get_star_graph_dataset(dataset_config=dataset_config)
     elif dataset_name == "brevo":
-        if streaming:
-            # datasets==3.5.0 IterableDataset.from_generator() uses HF_DATASETS_CACHE.
-            datasets.config.HF_DATASETS_CACHE = cache_dir
-        dataset = get_brevo_dataset(
-            dataset_config=dataset_config,
-            split=mode,
-            streaming=streaming,
-        )
+        cached_streaming = bool(brevo_cfg.get("cached_streaming", False))
+        if streaming and cached_streaming:
+            dataset = get_brevo_dataset(
+                dataset_config=brevo_cfg,
+                split=mode,
+                streaming=False,
+            )
+            # Preprocess+tokenize once into `_path`, then load memory-mapped Arrow.
+            processing_streaming = False
+        else:
+            if streaming:
+                # datasets==3.5.0 IterableDataset.from_generator() uses HF_DATASETS_CACHE.
+                datasets.config.HF_DATASETS_CACHE = cache_dir
+            dataset = get_brevo_dataset(
+                dataset_config=brevo_cfg,
+                split=mode,
+                streaming=streaming,
+            )
     elif dataset_name == "prefix":
         if streaming:
             raise ValueError("prefix dataset generation does not support streaming.")
@@ -384,7 +432,7 @@ def get_dataset(
     }
     if use_chunking:
         map_kwargs["remove_columns"] = ["text"]
-    if not streaming:
+    if not processing_streaming:
         map_kwargs.update(
             num_proc=num_proc, load_from_cache_file=LOAD_FROM_CACHE, desc="Tokenizing"
         )
@@ -401,7 +449,7 @@ def get_dataset(
     elif "text" in column_names:
         tokenized_dataset = tokenized_dataset.remove_columns("text")
 
-    if (not wrap) and min_length > 0 and (not streaming):
+    if (not wrap) and min_length > 0 and (not processing_streaming):
 
         def _has_min_length(example):
             mask = example.get("attention_mask", None)
@@ -417,8 +465,14 @@ def get_dataset(
         )
 
     if not wrap:
-        if not streaming:
+        if not processing_streaming:
             tokenized_dataset.save_to_disk(_path)
+            if brevo_cached_streaming:
+                LOGGER.info(
+                    "Loading BREVO cached tokenized Arrow split from: %s",
+                    _path,
+                )
+                return datasets.load_from_disk(_path).with_format("torch")
         return tokenized_dataset.with_format("torch")
 
     group_texts = functools.partial(
@@ -428,7 +482,7 @@ def get_dataset(
         eos=EOS,
         insert_special_tokens=insert_special_tokens,
     )
-    if streaming:
+    if processing_streaming:
         chunked_dataset = tokenized_dataset.map(group_texts, batched=True)
     else:
         chunked_dataset = tokenized_dataset.map(
@@ -573,24 +627,34 @@ def get_dataloaders(
     if skip_train:
         train_loader = None
     else:
+        shuffle_train = config.loader.get("shuffle_train", None)
+        if shuffle_train is None:
+            shuffle_train = not config.data.streaming
         train_loader = torch.utils.data.DataLoader(
             train_set,
             batch_size=config.loader.batch_size,
             num_workers=config.loader.num_workers,
             pin_memory=config.loader.pin_memory,
-            shuffle=not config.data.streaming,
-            persistent_workers=True,
+            shuffle=bool(shuffle_train),
+            persistent_workers=config.loader.num_workers > 0,
         )
         train_loader.tokenizer = tokenizer
     if skip_valid:
         valid_loader = None
     else:
         if valid_seed is None:
-            shuffle_valid = False
+            default_shuffle_valid = False
             generator = None
         else:
-            shuffle_valid = True
+            default_shuffle_valid = True
             generator = torch.Generator().manual_seed(valid_seed)
+        shuffle_valid = config.loader.get("shuffle_valid", None)
+        if shuffle_valid is None:
+            shuffle_valid = default_shuffle_valid
+        else:
+            shuffle_valid = bool(shuffle_valid)
+            if not shuffle_valid:
+                generator = None
         valid_loader = torch.utils.data.DataLoader(
             valid_set,
             batch_size=config.loader.eval_batch_size,
@@ -598,7 +662,7 @@ def get_dataloaders(
             pin_memory=config.loader.pin_memory,
             shuffle=shuffle_valid,
             generator=generator,
-            persistent_workers=True,
+            persistent_workers=config.loader.num_workers > 0,
         )
         valid_loader.tokenizer = tokenizer
 
