@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 import random
 import shutil
-from typing import TypedDict
+from typing import Iterator, TypedDict
 import urllib
 import zipfile
 
@@ -26,6 +26,7 @@ __all__ = [
     "generate_synthetic_dataset",
     "get_star_graph_dataset",
     "get_brevo_dataset",
+    "iter_brevo_split_records",
     "generate_prefix_dataset",
     "get_lambada_test_dataset",
     "get_text8_dataset",
@@ -96,6 +97,74 @@ class BrevoDatasetConfig(TypedDict, total=False):
     enforce_n_for_training: bool
     multi_token: bool
     cached_streaming: bool
+    cached_streaming_num_shards: int
+
+
+def iter_brevo_split_records(
+    dataset_config: BrevoDatasetConfig | None = None, split: str = "train"
+) -> Iterator[dict[str, str]]:
+    config = dict(dataset_config or {})
+    training_samples = int(config.get("training_samples", 200_000))
+    evaluation_samples = int(config.get("evaluation_samples", 20_000))
+    graph_N = int(config.get("graph_N", 110))
+    enforce_n_for_training = bool(config.get("enforce_n_for_training", False))
+    multi_token = bool(config.get("multi_token", False))
+
+    if split not in {"train", "validation"}:
+        raise ValueError(f"`split` must be one of 'train'/'validation', got {split}")
+    if graph_N < 3:
+        raise ValueError(f"`graph_N` must be >= 3, got {graph_N}")
+    if split == "train" and training_samples <= 0:
+        raise ValueError("`training_samples` must be > 0")
+    if split == "validation" and evaluation_samples <= 0:
+        raise ValueError("`evaluation_samples` must be > 0")
+
+    if split == "train":
+        num_samples = training_samples
+        enforce_n = enforce_n_for_training
+        rng_obj = random.Random(42)
+    else:
+        num_samples = evaluation_samples
+        enforce_n = True  # hardest-case eval: n = N
+        rng_obj = random.Random(43)
+
+    def _tokens_to_text(tokens: list[int], add_trailing_space: bool = False) -> str:
+        if not tokens:
+            return ""
+        text = " ".join(str(token) for token in tokens)
+        if add_trailing_space:
+            text += " "
+        return text
+
+    for _ in range(num_samples):
+        sample = topsort_data(
+            N=graph_N,
+            multi=multi_token,
+            enforce_n=enforce_n,
+            rng_obj=rng_obj,
+        )
+        token_ids = [int(token) for token in sample[0]]
+        labels = [int(label) for label in sample["label"]]
+
+        if len(token_ids) != len(labels):
+            raise ValueError(
+                "BREVO sample has mismatched token and label lengths: "
+                f"{len(token_ids)} != {len(labels)}"
+            )
+
+        prefix_tokens = [
+            token for token, label in zip(token_ids, labels, strict=True) if label == 0
+        ]
+        completion_tokens = [
+            token for token, label in zip(token_ids, labels, strict=True) if label == 1
+        ]
+
+        yield {
+            "prefixes": _tokens_to_text(
+                prefix_tokens, add_trailing_space=bool(completion_tokens)
+            ),
+            "completions": _tokens_to_text(completion_tokens),
+        }
 
 def get_brevo_dataset(
     dataset_config: BrevoDatasetConfig | None = None,

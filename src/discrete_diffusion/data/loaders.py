@@ -6,6 +6,7 @@ import functools
 import hashlib
 import json
 import os
+import shutil
 from typing import Optional
 
 import datasets
@@ -16,6 +17,7 @@ import transformers
 from .. import utils
 from .datasets import (
     get_brevo_dataset,
+    iter_brevo_split_records,
     generate_prefix_dataset,
     generate_synthetic_dataset,
     get_lambada_test_dataset,
@@ -140,6 +142,7 @@ def get_dataset(
     if mode == "train" and crop_train:
         block_size *= 2
 
+    brevo_cached_streaming_needs_build = False
     if dataset_name == "wikitext103":
         dataset = datasets.load_dataset(
             "wikitext",
@@ -226,12 +229,9 @@ def get_dataset(
     elif dataset_name == "brevo":
         cached_streaming = bool(brevo_cfg.get("cached_streaming", False))
         if streaming and cached_streaming:
-            dataset = get_brevo_dataset(
-                dataset_config=brevo_cfg,
-                split=mode,
-                streaming=False,
-            )
-            # Preprocess+tokenize once into `_path`, then load memory-mapped Arrow.
+            # Build in bounded shards instead of one monolithic in-memory split.
+            dataset = None
+            brevo_cached_streaming_needs_build = True
             processing_streaming = False
         else:
             if streaming:
@@ -427,6 +427,119 @@ def get_dataset(
             )
         return tokens
 
+    def _remove_raw_columns(ds):
+        column_names = ds.column_names or []
+        if dataset_name == "ptb" and "sentence" in column_names:
+            return ds.remove_columns("sentence")
+        if "scientific_papers" in dataset_name and {
+            "article",
+            "abstract",
+            "section_names",
+        }.issubset(set(column_names)):
+            return ds.remove_columns(["article", "abstract", "section_names"])
+        if dataset_name == "ag_news" and {"text", "label"}.issubset(set(column_names)):
+            return ds.remove_columns(["text", "label"])
+        if "text" in column_names:
+            return ds.remove_columns("text")
+        return ds
+
+    if brevo_cached_streaming_needs_build:
+        split_size = (
+            int(brevo_generation_cfg["training_samples"])
+            if mode == "train"
+            else int(brevo_generation_cfg["evaluation_samples"])
+        )
+        if split_size <= 0:
+            raise ValueError(f"BREVO split size must be > 0 for mode={mode}")
+
+        num_shards_cfg = brevo_cfg.get("cached_streaming_num_shards", None)
+        if num_shards_cfg is None:
+            num_shards = max(1, (split_size + 20_000 - 1) // 20_000)
+        else:
+            num_shards = int(num_shards_cfg)
+        if num_shards <= 0:
+            raise ValueError(
+                f"`cached_streaming_num_shards` must be > 0, got {num_shards}"
+            )
+        num_shards = min(num_shards, split_size)
+        shard_size = (split_size + num_shards - 1) // num_shards
+
+        LOGGER.info(
+            "Building BREVO cached tokenized split in %d shard(s) of up to %d examples",
+            num_shards,
+            shard_size,
+        )
+
+        assert dataset_name == "brevo"
+        shard_root = os.path.join(cache_dir, f".brevo_cached_build_{mode}_{brevo_cfg_key}")
+        if os.path.isdir(shard_root):
+            shutil.rmtree(shard_root)
+        os.makedirs(shard_root, exist_ok=True)
+
+        shard_paths = []
+        split_records = iter_brevo_split_records(dataset_config=brevo_cfg, split=mode)
+        remaining = split_size
+
+        for shard_idx in range(num_shards):
+            current_size = min(shard_size, remaining)
+            remaining -= current_size
+            LOGGER.info(
+                "Generating BREVO %s shard %d/%d (%d examples)",
+                mode,
+                shard_idx + 1,
+                num_shards,
+                current_size,
+            )
+            prefixes = []
+            completions = []
+            for _ in range(current_size):
+                record = next(split_records)
+                prefixes.append(record["prefixes"])
+                completions.append(record["completions"])
+
+            shard_dataset = datasets.Dataset.from_dict(
+                {"prefixes": prefixes, "completions": completions}
+            )
+            shard_tokenized = shard_dataset.map(
+                preprocess_and_tokenize,
+                batched=True,
+                num_proc=num_proc,
+                load_from_cache_file=LOAD_FROM_CACHE,
+                desc=f"Tokenizing BREVO {mode} shard {shard_idx + 1}/{num_shards}",
+            )
+            shard_tokenized = _remove_raw_columns(shard_tokenized)
+
+            if (not wrap) and min_length > 0:
+
+                def _has_min_length(example):
+                    mask = example.get("attention_mask", None)
+                    if mask is None:
+                        return True
+                    return sum(mask) >= min_length
+
+                shard_tokenized = shard_tokenized.filter(
+                    _has_min_length,
+                    num_proc=num_proc,
+                    load_from_cache_file=LOAD_FROM_CACHE,
+                    desc=f"Filtering BREVO {mode} shard {shard_idx + 1}/{num_shards}",
+                )
+
+            shard_path = os.path.join(shard_root, f"shard_{shard_idx:05d}")
+            shard_tokenized.save_to_disk(shard_path)
+            shard_paths.append(shard_path)
+
+        merged = datasets.concatenate_datasets(
+            [datasets.load_from_disk(path) for path in shard_paths]
+        )
+        merged.save_to_disk(_path)
+        shutil.rmtree(shard_root, ignore_errors=True)
+
+        LOGGER.info(
+            "Loading BREVO cached tokenized Arrow split from: %s",
+            _path,
+        )
+        return datasets.load_from_disk(_path).with_format("torch")
+
     map_kwargs = {
         "batched": True,
     }
@@ -437,17 +550,7 @@ def get_dataset(
             num_proc=num_proc, load_from_cache_file=LOAD_FROM_CACHE, desc="Tokenizing"
         )
     tokenized_dataset = data.map(preprocess_and_tokenize, **map_kwargs)
-    column_names = tokenized_dataset.column_names or []
-    if dataset_name == "ptb" and "sentence" in column_names:
-        tokenized_dataset = tokenized_dataset.remove_columns("sentence")
-    elif "scientific_papers" in dataset_name and {"article", "abstract", "section_names"}.issubset(set(column_names)):
-        tokenized_dataset = tokenized_dataset.remove_columns(
-            ["article", "abstract", "section_names"]
-        )
-    elif dataset_name == "ag_news" and {"text", "label"}.issubset(set(column_names)):
-        tokenized_dataset = tokenized_dataset.remove_columns(["text", "label"])
-    elif "text" in column_names:
-        tokenized_dataset = tokenized_dataset.remove_columns("text")
+    tokenized_dataset = _remove_raw_columns(tokenized_dataset)
 
     if (not wrap) and min_length > 0 and (not processing_streaming):
 

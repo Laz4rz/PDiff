@@ -10,7 +10,7 @@ defaults:
   - _self_
 
 data:
-  streaming: False
+  streaming: True
   tokenizer_name_or_path: brevo-dummy
   dataset_config:
     training_samples: 100000
@@ -19,6 +19,7 @@ data:
     enforce_n_for_training: False
     multi_token: False
     cached_streaming: True
+    cached_streaming_num_shards: 5
 
 algo:
   loss_type: gidd_constant_pi
