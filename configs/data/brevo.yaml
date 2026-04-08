@@ -1,0 +1,20 @@
+train: brevo
+valid: brevo
+tokenizer_name_or_path: brevo-dummy
+cache_dir: ${scratch_dir}/brevo
+wrap: False
+chunking: none
+streaming: True
+insert_train_eos: True
+insert_valid_eos: True
+insert_train_special: True
+insert_valid_special: True
+min_length: 0
+train_min_length: 0
+valid_min_length: 0
+dataset_config:
+  training_samples: 200000
+  evaluation_samples: 20000
+  graph_N: 110
+  enforce_n_for_training: False
+  multi_token: False

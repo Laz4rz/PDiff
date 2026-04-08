@@ -236,7 +236,7 @@ class TopoSortDepthStats:
     # Can use the following trivial code to evaluate a model's output --- topsort answer is not unique
     @staticmethod
     def parse_tokens_multi(tokens, mini_vocab=4):
-        tokens = [a for a in tokens if a!=9700]
+        tokens = [a for a in tokens if a != pad_token_id]
         if tokens[0] != bos_token_id or tokens[-1] != bos_token_id:
             return False, None, None
         try:
@@ -309,31 +309,37 @@ rng = random.Random(42)
 
 # NOTE: during testing, we enforce n = N and the code is NOT provided here
 
-def _sample_task_size(N):
+def _sample_task_size(N, rng_obj=None):
+    if rng_obj is None:
+        rng_obj = rng
     _distribution_list_to_choose = list(range(3, N+1))
     power, bias = 1, pow(N, 0.5)
     p = [1.0 / (pow(i, power) + bias + 1e-12) for i in _distribution_list_to_choose]
     _distribution_p = [1.0 * x / sum(p) for x in p]
-    return rng.choices(_distribution_list_to_choose, weights=_distribution_p)[0]
+    return rng_obj.choices(_distribution_list_to_choose, weights=_distribution_p)[0]
 
 
-def topsort_data(N, multi=False, enforce_n=False):
+def topsort_data(N, multi=False, enforce_n=False, rng_obj=None):
+    if rng_obj is None:
+        rng_obj = rng
     if not enforce_n:
-        n = _sample_task_size(N)
+        n = _sample_task_size(N, rng_obj=rng_obj)
     else:
         n = N
 
     topo = TopoSortDepthStats(n, vocab_size=N)
-    text, token_type, list_labels, depth = topo.generate_tokens(rng, multi=multi)
+    text, token_type, list_labels, depth = topo.generate_tokens(rng_obj, multi=multi)
     
     ## token_type is for my own reference, not used for training
     ## list_labels = 0 or 1, where 1's are for answer tokens. We pretrain only on those answer tokens --- pretraining with all the tokens yield similar results, but is a factor slower.
     return {0:text, 1:token_type, 'label':list_labels}
 
-def topsort_data_raw(N):
-    n = _sample_task_size(N)
+def topsort_data_raw(N, rng_obj=None):
+    if rng_obj is None:
+        rng_obj = rng
+    n = _sample_task_size(N, rng_obj=rng_obj)
     topo = TopoSortDepthStats(n, vocab_size=N)
-    dag, topo_order, depth = topo.generate_sample(rng)
+    dag, topo_order, depth = topo.generate_sample(rng_obj)
     query = topo_order[-1]
     subdag = topo.subtree_from_query(dag, query)
     edges = [(parent, child) for child, parents in dag.items() for parent in parents]
@@ -350,8 +356,12 @@ def topsort_data_raw(N):
     }
 
 
-bos_token_id = 9999
-eos_token_id = 9998
+# Keep special token ids compact and just above the largest N used in examples.
+max_example_node_id = 110
+bos_token_id = max_example_node_id + 3
+eos_token_id = bos_token_id - 1  # keeps `bos-1` delimiter compatible
+pad_token_id = bos_token_id + 1
+mask_token_id = bos_token_id + 2
 
 if __name__ == "__main__":
     print(topsort_data(N=110))  # used as our Brevo1 tasks
@@ -361,4 +371,3 @@ if __name__ == "__main__":
     print(topsort_data(N=50, multi=True))  # used as our Brevo2 tasks
     print(topsort_data(N=40, multi=True))
     print(topsort_data(N=30, multi=True))
-

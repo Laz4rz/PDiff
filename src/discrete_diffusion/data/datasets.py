@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import random
 import shutil
 from typing import TypedDict
 import urllib
@@ -97,7 +98,14 @@ class BrevoDatasetConfig(TypedDict, total=False):
 
 def get_brevo_dataset(
     dataset_config: BrevoDatasetConfig | None = None,
-) -> datasets.DatasetDict:
+    split: str | None = None,
+    streaming: bool = False,
+) -> (
+    datasets.DatasetDict
+    | datasets.Dataset
+    | datasets.IterableDatasetDict
+    | datasets.IterableDataset
+):
     config = dict(dataset_config or {})
     training_samples = int(config.get("training_samples", 200_000))
     evaluation_samples = int(config.get("evaluation_samples", 20_000))
@@ -105,10 +113,14 @@ def get_brevo_dataset(
     enforce_n_for_training = bool(config.get("enforce_n_for_training", False))
     multi_token = bool(config.get("multi_token", False))
 
+    if split not in {None, "train", "validation"}:
+        raise ValueError(f"`split` must be one of None/'train'/'validation', got {split}")
     if graph_N < 3:
         raise ValueError(f"`graph_N` must be >= 3, got {graph_N}")
-    if training_samples <= 0 or evaluation_samples <= 0:
-        raise ValueError("`training_samples` and `evaluation_samples` must be > 0")
+    if split in {None, "train"} and training_samples <= 0:
+        raise ValueError("`training_samples` must be > 0")
+    if split in {None, "validation"} and evaluation_samples <= 0:
+        raise ValueError("`evaluation_samples` must be > 0")
 
     def _tokens_to_text(tokens: list[int], add_trailing_space: bool = False) -> str:
         if not tokens:
@@ -118,12 +130,14 @@ def get_brevo_dataset(
             text += " "
         return text
 
-    def _build_split(num_samples: int, enforce_n: bool, split: str) -> datasets.Dataset:
-        prefixes: list[str] = []
-        completions: list[str] = []
-
-        for _ in tqdm(range(num_samples), desc=f"Generating BREVO {split}"):
-            sample = topsort_data(N=graph_N, multi=multi_token, enforce_n=enforce_n)
+    def _iter_split_records(num_samples: int, enforce_n: bool, rng_obj: random.Random):
+        for _ in range(num_samples):
+            sample = topsort_data(
+                N=graph_N,
+                multi=multi_token,
+                enforce_n=enforce_n,
+                rng_obj=rng_obj,
+            )
             token_ids = [int(token) for token in sample[0]]
             labels = [int(label) for label in sample["label"]]
 
@@ -140,29 +154,78 @@ def get_brevo_dataset(
                 token for token, label in zip(token_ids, labels, strict=True) if label == 1
             ]
 
-            prefixes.append(
-                _tokens_to_text(prefix_tokens, add_trailing_space=bool(completion_tokens))
-            )
-            completions.append(_tokens_to_text(completion_tokens))
-
-        return datasets.Dataset.from_dict(
-            {
-                "prefixes": prefixes,
-                "completions": completions,
+            yield {
+                "prefixes": _tokens_to_text(
+                    prefix_tokens, add_trailing_space=bool(completion_tokens)
+                ),
+                "completions": _tokens_to_text(completion_tokens),
             }
-        )
 
-    train_ds = _build_split(
-        num_samples=training_samples,
-        enforce_n=enforce_n_for_training,
-        split="train",
-    )
-    valid_ds = _build_split(
-        num_samples=evaluation_samples,
-        enforce_n=True,  # hardest-case eval: n = N
-        split="validation",
-    )
+    def _build_split(
+        num_samples: int, enforce_n: bool, split_name: str, rng_obj: random.Random
+    ) -> datasets.Dataset:
+        prefixes: list[str] = []
+        completions: list[str] = []
 
+        for record in tqdm(
+            _iter_split_records(num_samples, enforce_n, rng_obj),
+            total=num_samples,
+            desc=f"Generating BREVO {split_name}",
+        ):
+            prefixes.append(record["prefixes"])
+            completions.append(record["completions"])
+
+        return datasets.Dataset.from_dict({"prefixes": prefixes, "completions": completions})
+
+    def _build_split_streaming(
+        num_samples: int, enforce_n: bool, split_name: str, rng_obj: random.Random
+    ) -> datasets.IterableDataset:
+        def _generator():
+            yield from _iter_split_records(num_samples, enforce_n, rng_obj)
+
+        return datasets.IterableDataset.from_generator(_generator)
+
+    train_ds = None
+    valid_ds = None
+    train_rng = random.Random(42)
+    valid_rng = random.Random(43)
+    if split in {None, "train"}:
+        if streaming:
+            train_ds = _build_split_streaming(
+                num_samples=training_samples,
+                enforce_n=enforce_n_for_training,
+                split_name="train",
+                rng_obj=train_rng,
+            )
+        else:
+            train_ds = _build_split(
+                num_samples=training_samples,
+                enforce_n=enforce_n_for_training,
+                split_name="train",
+                rng_obj=train_rng,
+            )
+    if split in {None, "validation"}:
+        if streaming:
+            valid_ds = _build_split_streaming(
+                num_samples=evaluation_samples,
+                enforce_n=True,  # hardest-case eval: n = N
+                split_name="validation",
+                rng_obj=valid_rng,
+            )
+        else:
+            valid_ds = _build_split(
+                num_samples=evaluation_samples,
+                enforce_n=True,  # hardest-case eval: n = N
+                split_name="validation",
+                rng_obj=valid_rng,
+            )
+
+    if split == "train":
+        return train_ds
+    if split == "validation":
+        return valid_ds
+    if streaming:
+        return datasets.IterableDatasetDict({"train": train_ds, "validation": valid_ds})
     return datasets.DatasetDict({"train": train_ds, "validation": valid_ds})
 
 

@@ -6,11 +6,72 @@ from typing import Dict, List
 import string
 import transformers
 
+from .generators.brevo import (
+    bos_token_id as BREVO_BOS_TOKEN_ID,
+    eos_token_id as BREVO_EOS_TOKEN_ID,
+    mask_token_id as BREVO_MASK_TOKEN_ID,
+    pad_token_id as BREVO_PAD_TOKEN_ID,
+)
+
 __all__ = [
+    "BrevoDummyTokenizer",
     "SyntheticTokenizer",
     "Text8Tokenizer",
     "AsciiCharTokenizer",
 ]
+
+
+class BrevoDummyTokenizer:
+    """Hardcoded tokenizer metadata for pretokenized BREVO."""
+
+    def __init__(self) -> None:
+        self.vocab_size = BREVO_MASK_TOKEN_ID + 1
+        self.bos_token = "[BOS]"
+        self.eos_token = "[EOS]"
+        self.pad_token = "[PAD]"
+        self.mask_token = "[MASK]"
+        self.cls_token = self.bos_token
+        self.sep_token = self.eos_token
+
+        self.bos_token_id = BREVO_BOS_TOKEN_ID
+        self.eos_token_id = BREVO_EOS_TOKEN_ID
+        self.pad_token_id = BREVO_PAD_TOKEN_ID
+        self.mask_token_id = BREVO_MASK_TOKEN_ID
+
+        self.padding_side = "right"
+        self.truncation_side = "right"
+
+    def __len__(self) -> int:
+        return self.vocab_size
+
+    def __call__(self, *args, **kwargs):
+        raise NotImplementedError("BrevoDummyTokenizer does not support tokenization")
+
+    def encode(self, *args, **kwargs):
+        raise NotImplementedError("BrevoDummyTokenizer does not support tokenization")
+
+    def decode(self, token_ids, skip_special_tokens: bool = False, **kwargs) -> str:
+        del kwargs
+        if hasattr(token_ids, "tolist"):
+            token_ids = token_ids.tolist()
+        if isinstance(token_ids, int):
+            token_ids = [token_ids]
+        ids = [int(tok) for tok in token_ids]
+        if skip_special_tokens:
+            special_ids = {
+                self.bos_token_id,
+                self.eos_token_id,
+                self.pad_token_id,
+                self.mask_token_id,
+            }
+            ids = [tok for tok in ids if tok not in special_ids]
+        return " ".join(str(tok) for tok in ids)
+
+    def batch_decode(self, sequences, skip_special_tokens: bool = False, **kwargs):
+        return [
+            self.decode(seq, skip_special_tokens=skip_special_tokens, **kwargs)
+            for seq in sequences
+        ]
 
 
 class SyntheticTokenizer(transformers.PreTrainedTokenizer):

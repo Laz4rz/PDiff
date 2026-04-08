@@ -29,7 +29,12 @@ from .processing import (
     scientific_papers_detokenizer,
     wt_detokenizer,
 )
-from .tokenizers import AsciiCharTokenizer, SyntheticTokenizer, Text8Tokenizer
+from .tokenizers import (
+    AsciiCharTokenizer,
+    BrevoDummyTokenizer,
+    SyntheticTokenizer,
+    Text8Tokenizer,
+)
 from .flex_chunking import chunk_documents
 
 LOGGER = utils.get_logger(__name__)
@@ -182,8 +187,13 @@ def get_dataset(
         dataset = get_star_graph_dataset(dataset_config=dataset_config)
     elif dataset_name == "brevo":
         if streaming:
-            raise ValueError("brevo dataset generation does not support streaming.")
-        dataset = get_brevo_dataset(dataset_config=dataset_config)
+            # datasets==3.5.0 IterableDataset.from_generator() uses HF_DATASETS_CACHE.
+            datasets.config.HF_DATASETS_CACHE = cache_dir
+        dataset = get_brevo_dataset(
+            dataset_config=dataset_config,
+            split=mode,
+            streaming=streaming,
+        )
     elif dataset_name == "prefix":
         if streaming:
             raise ValueError("prefix dataset generation does not support streaming.")
@@ -198,6 +208,8 @@ def get_dataset(
         )
 
     if dataset_name in ["lambada", "openwebtext-train", "openwebtext-valid"]:
+        data = dataset
+    elif dataset_name == "brevo":
         data = dataset
     else:
         data = dataset[mode]
@@ -217,28 +229,12 @@ def get_dataset(
     else:
         detokenizer = None
 
-    brevo_pretokenized = dataset_name.startswith("brevo") and not tokenize
-    if brevo_pretokenized:
-        # BREVO tokenize=False path already provides integer IDs, so tolerate
-        # minimal tokenizer-like objects by falling back to task-native IDs.
-        bos_id = tokenizer.bos_token_id
-        eos_id = tokenizer.eos_token_id
-        pad_id = tokenizer.pad_token_id
+    EOS = tokenizer.eos_token_id
+    BOS = tokenizer.bos_token_id
+    PAD = tokenizer.pad_token_id
 
-        BOS = int(bos_id)
-        EOS = int(eos_id)
-        PAD = int(pad_id)
-
-        tok_len = len(tokenizer)
-
-    try:
-        tokenizer.padding_side = "right"
-    except Exception:
-        pass
-    try:
-        tokenizer.truncation_side = "right"
-    except Exception:
-        pass
+    tokenizer.padding_side = "right"
+    tokenizer.truncation_side = "right"
 
     use_chunking = chunking_mode != "none"
     if use_chunking:
@@ -393,15 +389,16 @@ def get_dataset(
             num_proc=num_proc, load_from_cache_file=LOAD_FROM_CACHE, desc="Tokenizing"
         )
     tokenized_dataset = data.map(preprocess_and_tokenize, **map_kwargs)
-    if dataset_name == "ptb":
+    column_names = tokenized_dataset.column_names or []
+    if dataset_name == "ptb" and "sentence" in column_names:
         tokenized_dataset = tokenized_dataset.remove_columns("sentence")
-    elif "scientific_papers" in dataset_name:
+    elif "scientific_papers" in dataset_name and {"article", "abstract", "section_names"}.issubset(set(column_names)):
         tokenized_dataset = tokenized_dataset.remove_columns(
             ["article", "abstract", "section_names"]
         )
-    elif dataset_name == "ag_news":
+    elif dataset_name == "ag_news" and {"text", "label"}.issubset(set(column_names)):
         tokenized_dataset = tokenized_dataset.remove_columns(["text", "label"])
-    elif "text" in tokenized_dataset.column_names:
+    elif "text" in column_names:
         tokenized_dataset = tokenized_dataset.remove_columns("text")
 
     if (not wrap) and min_length > 0 and (not streaming):
@@ -451,6 +448,8 @@ def get_tokenizer(config):
         tokenizer = Text8Tokenizer()
     elif config.data.tokenizer_name_or_path == "ascii-char":
         tokenizer = AsciiCharTokenizer()
+    elif config.data.tokenizer_name_or_path == "brevo-dummy":
+        tokenizer = BrevoDummyTokenizer()
     elif config.data.tokenizer_name_or_path == "bert-base-uncased":
         tokenizer = transformers.BertTokenizer.from_pretrained("bert-base-uncased")
     elif config.data.tokenizer_name_or_path == "synthetic":
@@ -534,6 +533,10 @@ def get_dataloaders(
             min_length=train_min_length,
             chunking=train_chunking,
             dataset_config=dataset_config,
+            tokenize=not (
+                config.data.train == "brevo"
+                and config.data.tokenizer_name_or_path == "brevo-dummy"
+            ),
         )
 
     if config.data.valid in ["text8", "lm1b", "ag_news"]:
@@ -561,6 +564,10 @@ def get_dataloaders(
             min_length=valid_min_length,
             chunking=valid_chunking,
             dataset_config=dataset_config,
+            tokenize=not (
+                config.data.valid == "brevo"
+                and config.data.tokenizer_name_or_path == "brevo-dummy"
+            ),
         )
 
     if skip_train:
