@@ -180,7 +180,10 @@ class TopoSortDepthStats:
        
     @staticmethod
     def parse_tokens(tokens):
-        if tokens[0] != bos_token_id or tokens[-1] != bos_token_id:
+        tokens = [a for a in tokens if a != pad_token_id]
+        if not tokens:
+            return False, None, None
+        if tokens[0] != bos_token_id or tokens[-1] != eos_token_id:
             return False, None, None
         try:
             idx_query = tokens.index(bos_token_id-2)
@@ -237,7 +240,9 @@ class TopoSortDepthStats:
     @staticmethod
     def parse_tokens_multi(tokens, mini_vocab=4):
         tokens = [a for a in tokens if a != pad_token_id]
-        if tokens[0] != bos_token_id or tokens[-1] != bos_token_id:
+        if not tokens:
+            return False, None, None
+        if tokens[0] != bos_token_id or tokens[-1] != eos_token_id:
             return False, None, None
         try:
             idx_query = tokens.index(bos_token_id-2)
@@ -261,7 +266,10 @@ class TopoSortDepthStats:
         answer_tokens = tokens[idx_answer + 1 : -1]
 
         edge_words = split_words(edge_tokens)
-        query_word = tuple(split_words(query_tokens)[0])
+        query_words = split_words(query_tokens)
+        if len(query_words) != 1:
+            return False, None, None
+        query_word = tuple(query_words[0])
         answer_words = split_words(answer_tokens)
 
         if len(edge_words) % 2 != 0:

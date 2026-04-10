@@ -111,11 +111,19 @@ class GiddLoss(nn.Module):
 
         eps = torch.finfo(loss.dtype).eps
         denom_ws = (ws * attention_mask).sum().clamp_min(eps)
+        denom_attn = attention_mask.sum().clamp_min(eps)
         metrics = {
             "kl_loss": (ws * kl_loss.detach() * attention_mask).sum() / denom_ws,
             "is_loss": (ws * is_loss.detach() * attention_mask).sum() / denom_ws,
             "elbo": (elbo.detach() * attention_mask).sum()
-            / attention_mask.sum().clamp_min(eps),
+            / denom_attn,
+            "loss_weight_mean": (ws.detach() * attention_mask).sum() / denom_attn,
+            "loss_weight_min": ws.detach().min(),
+            "loss_weight_max": ws.detach().max(),
+            "raw_weight_mean": (elbo_weights.detach() * attention_mask).sum()
+            / denom_attn,
+            "raw_weight_min": elbo_weights.detach().min(),
+            "raw_weight_max": elbo_weights.detach().max(),
         }
 
         if reduction == "tokenmean":
@@ -244,11 +252,19 @@ class GiddLossConstantPi(nn.Module):
 
         eps = torch.finfo(loss.dtype).eps
         denom_ws = (ws * attention_mask).sum().clamp_min(eps)
+        denom_attn = attention_mask.sum().clamp_min(eps)
         metrics = {
             "kl_loss": (ws * kl_loss.detach() * attention_mask).sum() / denom_ws,
             "is_loss": (ws * is_loss.detach() * attention_mask).sum() / denom_ws,
             "elbo": (elbo.detach() * attention_mask).sum()
-            / attention_mask.sum().clamp_min(eps),
+            / denom_attn,
+            "loss_weight_mean": (ws.detach() * attention_mask).sum() / denom_attn,
+            "loss_weight_min": ws.detach().min(),
+            "loss_weight_max": ws.detach().max(),
+            "raw_weight_mean": (elbo_weights.detach() * attention_mask).sum()
+            / denom_attn,
+            "raw_weight_min": elbo_weights.detach().min(),
+            "raw_weight_max": elbo_weights.detach().max(),
         }
 
         if reduction == "tokenmean":
@@ -585,6 +601,7 @@ class GIDD(trainer_base.TrainerBase):
 
     @torch.no_grad()
     def _compute_generation_accuracy(self, input_tokens, accuracy_tokens):
+        method = str(self.config.eval.generation_accuracy_method)
         accuracy_mask = accuracy_tokens.to(device=input_tokens.device, dtype=torch.bool)
         if self.ignore_bos:
             accuracy_mask = accuracy_mask.clone()
@@ -624,6 +641,43 @@ class GIDD(trainer_base.TrainerBase):
             s = timesteps[i + 1] * ones
             z_t = sampler.compute_posterior(self, z_t, t, s)
             z_t = torch.where(fixed_mask, input_tokens, z_t)
+
+        if method == "brevo_topo":
+            # Topological correctness is sample-level only (answer order is non-unique).
+            from ..data.generators.brevo import TopoSortDepthStats
+
+            dataset_cfg = getattr(self.config.data, "dataset_config", None)
+            if dataset_cfg is None:
+                multi = False
+            elif hasattr(dataset_cfg, "get"):
+                multi = bool(dataset_cfg.get("multi_token", False))
+            else:
+                multi = bool(getattr(dataset_cfg, "multi_token", False))
+            parser = (
+                TopoSortDepthStats.parse_tokens_multi
+                if multi
+                else TopoSortDepthStats.parse_tokens
+            )
+            correct_samples = 0
+            num_samples = int(has_accuracy.sum().item())
+            valid_idx = torch.nonzero(has_accuracy, as_tuple=False).squeeze(-1)
+            for idx in valid_idx.tolist():
+                pred = z_t[idx].detach().cpu().tolist()
+                ok, _, _ = parser(pred)
+                if ok:
+                    correct_samples += 1
+            return (
+                None,
+                None,
+                torch.tensor(float(correct_samples), device=self.device),
+                torch.tensor(float(num_samples), device=self.device),
+            )
+
+        if method != "exact":
+            raise ValueError(
+                "Unsupported eval.generation_accuracy_method="
+                f"{method!r}. Expected one of: exact, brevo_topo."
+            )
 
         token_correct = (z_t == input_tokens) & accuracy_mask
         sample_correct = ((~accuracy_mask) | (z_t == input_tokens)).all(dim=-1) & has_accuracy
@@ -683,7 +737,7 @@ class GIDD(trainer_base.TrainerBase):
         if train_mode and self.training:
             self.log(
                 "train/elbo",
-                metrics["elbo"].item(),
+                metrics["elbo"].detach(),
                 on_step=True,
                 on_epoch=False,
                 prog_bar=False,
@@ -691,7 +745,7 @@ class GIDD(trainer_base.TrainerBase):
             )
             self.log(
                 "train/kl_loss",
-                metrics["kl_loss"].item(),
+                metrics["kl_loss"].detach(),
                 on_step=True,
                 on_epoch=False,
                 prog_bar=False,
@@ -699,7 +753,55 @@ class GIDD(trainer_base.TrainerBase):
             )
             self.log(
                 "train/is_loss",
-                metrics["is_loss"].item(),
+                metrics["is_loss"].detach(),
+                on_step=True,
+                on_epoch=False,
+                prog_bar=False,
+                sync_dist=True,
+            )
+            self.log(
+                "train/gidd_loss_weight_mean",
+                metrics["loss_weight_mean"].detach(),
+                on_step=True,
+                on_epoch=False,
+                prog_bar=False,
+                sync_dist=True,
+            )
+            self.log(
+                "train/gidd_loss_weight_min",
+                metrics["loss_weight_min"].detach(),
+                on_step=True,
+                on_epoch=False,
+                prog_bar=False,
+                sync_dist=True,
+            )
+            self.log(
+                "train/gidd_loss_weight_max",
+                metrics["loss_weight_max"].detach(),
+                on_step=True,
+                on_epoch=False,
+                prog_bar=False,
+                sync_dist=True,
+            )
+            self.log(
+                "train/gidd_raw_weight_mean",
+                metrics["raw_weight_mean"].detach(),
+                on_step=True,
+                on_epoch=False,
+                prog_bar=False,
+                sync_dist=True,
+            )
+            self.log(
+                "train/gidd_raw_weight_min",
+                metrics["raw_weight_min"].detach(),
+                on_step=True,
+                on_epoch=False,
+                prog_bar=False,
+                sync_dist=True,
+            )
+            self.log(
+                "train/gidd_raw_weight_max",
+                metrics["raw_weight_max"].detach(),
                 on_step=True,
                 on_epoch=False,
                 prog_bar=False,

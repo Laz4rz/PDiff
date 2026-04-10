@@ -56,6 +56,7 @@ eval:
   disable_ema: False
   compute_perplexity_on_sanity: False
   compute_generation_accuracy: True
+  generation_accuracy_method: exact  # exact | brevo_topo
   generation_accuracy_max_batches: 1
   generation_accuracy_steps: null
   generation_accuracy_eps: null
