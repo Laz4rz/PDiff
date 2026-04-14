@@ -96,6 +96,9 @@ def get_dataset(
         )
     processing_streaming = streaming
     brevo_cfg = dict(dataset_config or {}) if dataset_name == "brevo" else {}
+    brevo_force_regenerate = (
+        dataset_name == "brevo" and bool(brevo_cfg.get("force_regenerate", False))
+    )
     brevo_generation_cfg = (
         {
             "training_samples": int(brevo_cfg.get("training_samples", 200_000)),
@@ -118,12 +121,21 @@ def get_dataset(
         ).hexdigest()[:12]
         filename = filename.replace(".dat", f"_cfg{brevo_cfg_key}.dat")
     _path = os.path.join(cache_dir, filename)
+    if brevo_force_regenerate and os.path.exists(_path):
+        LOGGER.info(
+            "BREVO force_regenerate=True; removing existing cache at: %s",
+            _path,
+        )
+        if os.path.isdir(_path):
+            shutil.rmtree(_path)
+        else:
+            os.remove(_path)
     brevo_cached_streaming = (
         dataset_name == "brevo"
         and streaming
         and bool(brevo_cfg.get("cached_streaming", False))
     )
-    if brevo_cached_streaming:
+    if brevo_cached_streaming and not brevo_force_regenerate:
         if utils.fsspec_exists(_path):
             LOGGER.info(
                 "Loading BREVO cached tokenized Arrow split from: %s",
@@ -132,7 +144,7 @@ def get_dataset(
             # Arrow datasets loaded from disk are memory-mapped by HF Datasets.
             return datasets.load_from_disk(_path).with_format("torch")
 
-    if utils.fsspec_exists(_path) and LOAD_FROM_CACHE:
+    if utils.fsspec_exists(_path) and LOAD_FROM_CACHE and not brevo_force_regenerate:
         LOGGER.info("Loading data from: %s", _path)
         return datasets.load_from_disk(_path).with_format("torch")
     LOGGER.info("Generating new data at: %s", _path)
@@ -373,7 +385,7 @@ def get_dataset(
                 if pad_len > 0:
                     seq_ids += [PAD] * pad_len
                     seq_attention_mask += [0] * pad_len
-                    seq_loss_mask += [1] * pad_len
+                    seq_loss_mask += [0] * pad_len
                     seq_accuracy_mask += [0] * pad_len
                     seq_noise_mask += [0] * pad_len
 

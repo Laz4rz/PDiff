@@ -1,10 +1,10 @@
 # Launch:
-# .venv/bin/python -m discrete_diffusion --config-name gidd_brevo
+# .venv/bin/python -m discrete_diffusion --config-name ar_brevo
 defaults:
   - config
   - override /data: brevo
   - override /model: tiny
-  - override /algo: gidd
+  - override /algo: ar
   - override /strategy: single-device
   - override /lr_scheduler: constant_warmup
   - _self_
@@ -21,16 +21,6 @@ data:
     force_regenerate: False
     cached_streaming: True
     cached_streaming_num_shards: 20
-
-algo:
-  loss_type: gidd_constant_pi
-  p_uniform: 0.0
-  loss_weighting: clip
-  min_loss_weight: 1.0
-  max_loss_weight: 1.0
-
-sampling:
-  steps: 128
 
 trainer:
   deterministic: true
@@ -82,13 +72,15 @@ callbacks:
     save_last: true
 
 eval:
-  generate_samples: false
-  run_validation_at_train_end: false
+  compute_generation_accuracy: true
   generation_accuracy_method: brevo_topo
+  generation_accuracy_max_batches: 1
   log_validation_completions: true
   log_validation_completions_max_samples: 8
   log_validation_completions_include_step: true
   log_validation_completions_summary_key: val/completions_latest
+  generate_samples: false
+  run_validation_at_train_end: false
 
 checkpointing:
   save_dir: ${hydra:runtime.output_dir}
@@ -105,7 +97,7 @@ wandb:
   save_dir: ${hydra:runtime.cwd}/wandb_logs
   group: brevo-compare
   job_type: single-run
-  name: p${oc.select:algo.p_uniform,0}-m${model.name}-lr${optim.lr}-ts${data.dataset_config.training_samples}-N${data.dataset_config.graph_N}-bs${loader.batch_size}-s${seed}
+  name: ar-m${model.name}-lr${optim.lr}-ts${data.dataset_config.training_samples}-N${data.dataset_config.graph_N}-bs${loader.batch_size}-s${seed}
 
 logging:
   print_config: false

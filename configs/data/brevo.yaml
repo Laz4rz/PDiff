@@ -18,6 +18,8 @@ dataset_config:
   graph_N: 110
   enforce_n_for_training: False
   multi_token: False
+  # If true, ignore and rebuild cached tokenized split(s) for this run.
+  force_regenerate: False
   # Optional middle-ground mode:
   # 1) generate split once to Arrow on disk, 2) iterate stream-style from local cache.
   cached_streaming: False

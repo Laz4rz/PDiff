@@ -5,6 +5,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import omegaconf
 
 from . import base as trainer_base
 from ..noise_schedules import LogLinear
@@ -326,6 +327,8 @@ class GIDD(trainer_base.TrainerBase):
 
         self._loglinear = LogLinear()
         self._val_gen_acc_batches_seen = 0
+        self._val_completion_table_rows = []
+        self._val_completion_table_columns = None
 
     def _process_model_input(self, x0, valid_tokens):
         return x0, valid_tokens
@@ -533,7 +536,9 @@ class GIDD(trainer_base.TrainerBase):
         )
         if self._should_compute_generation_accuracy(accuracy_tokens):
             gen_metrics = self._compute_generation_accuracy(
-                batch["input_ids"], accuracy_tokens
+                batch["input_ids"],
+                accuracy_tokens,
+                batch.get("attention_mask", None),
             )
             if gen_metrics is not None:
                 self.metrics.update_valid_gen(*gen_metrics)
@@ -600,7 +605,7 @@ class GIDD(trainer_base.TrainerBase):
         return sampler is not None
 
     @torch.no_grad()
-    def _compute_generation_accuracy(self, input_tokens, accuracy_tokens):
+    def _compute_generation_accuracy(self, input_tokens, accuracy_tokens, attention_mask=None):
         method = str(self.config.eval.generation_accuracy_method)
         accuracy_mask = accuracy_tokens.to(device=input_tokens.device, dtype=torch.bool)
         if self.ignore_bos:
@@ -625,14 +630,12 @@ class GIDD(trainer_base.TrainerBase):
         sampler = self._create_sampler()
         if sampler is None:
             return None
-
         bsz = input_tokens.shape[0]
         timesteps = torch.linspace(1 - eps, eps, num_steps + 1, device=self.device)
         z_t = self.hybrid_noise.sample_prior((bsz, self.num_tokens)).to(self.device)
         inject_bos = getattr(self.config.sampling, "inject_bos", True)
         if inject_bos:
             z_t[:, 0] = self.tokenizer.bos_token_id
-
         fixed_mask = ~accuracy_mask
         z_t = torch.where(fixed_mask, input_tokens, z_t)
         ones = torch.ones(bsz, device=self.device)
@@ -641,6 +644,14 @@ class GIDD(trainer_base.TrainerBase):
             s = timesteps[i + 1] * ones
             z_t = sampler.compute_posterior(self, z_t, t, s)
             z_t = torch.where(fixed_mask, input_tokens, z_t)
+        self._maybe_log_validation_completions(
+            input_tokens=input_tokens,
+            pred_tokens=z_t,
+            accuracy_mask=accuracy_mask,
+            has_accuracy=has_accuracy,
+            attention_mask=attention_mask,
+            method=method,
+        )
 
         if method == "brevo_topo":
             # Topological correctness is sample-level only (answer order is non-unique).
@@ -688,6 +699,189 @@ class GIDD(trainer_base.TrainerBase):
             sample_correct.sum().to(dtype=torch.float32),
             has_accuracy.sum().to(dtype=torch.float32),
         )
+
+    def _split_prefix_completion(self, seq_tokens, completion_mask, attention_mask=None):
+        if attention_mask is None:
+            valid_mask = torch.ones_like(completion_mask, dtype=torch.bool)
+        else:
+            valid_mask = attention_mask.to(dtype=torch.bool)
+
+        prefix_mask = (~completion_mask) & valid_mask
+        completion_mask = completion_mask & valid_mask
+
+        prefix_ids = seq_tokens[prefix_mask]
+        completion_ids = seq_tokens[completion_mask]
+
+        pad_id = getattr(self.tokenizer, "pad_token_id", None)
+        if pad_id is not None:
+            prefix_ids = prefix_ids[prefix_ids != int(pad_id)]
+            completion_ids = completion_ids[completion_ids != int(pad_id)]
+
+        return prefix_ids.tolist(), completion_ids.tolist()
+
+    def _render_token_ids(self, token_ids):
+        ids = [int(tok) for tok in token_ids]
+        convert = getattr(self.tokenizer, "convert_ids_to_tokens", None)
+        if callable(convert):
+            converted = convert(ids)
+            if isinstance(converted, list):
+                return " ".join(str(tok) for tok in converted)
+        return " ".join(str(tok) for tok in ids)
+
+    def _maybe_log_validation_completions(
+        self,
+        input_tokens,
+        pred_tokens,
+        accuracy_mask,
+        has_accuracy,
+        attention_mask,
+        method,
+    ):
+        if not bool(
+            omegaconf.OmegaConf.select(
+                self.config, "eval.log_validation_completions", default=False
+            )
+        ):
+            return
+        if self._val_gen_acc_batches_seen != 0:
+            return
+        if self.trainer is None or self.trainer.sanity_checking:
+            return
+        if not self.trainer.is_global_zero:
+            return
+        logger = self.trainer.logger
+        if logger is None or not hasattr(logger, "log_table"):
+            return
+
+        max_samples = int(
+            omegaconf.OmegaConf.select(
+                self.config, "eval.log_validation_completions_max_samples", default=8
+            )
+        )
+        if max_samples <= 0:
+            return
+
+        parser = None
+        if method == "brevo_topo":
+            from ..data.generators.brevo import TopoSortDepthStats
+
+            dataset_cfg = getattr(self.config.data, "dataset_config", None)
+            if dataset_cfg is None:
+                multi = False
+            elif hasattr(dataset_cfg, "get"):
+                multi = bool(dataset_cfg.get("multi_token", False))
+            else:
+                multi = bool(getattr(dataset_cfg, "multi_token", False))
+            parser = (
+                TopoSortDepthStats.parse_tokens_multi
+                if multi
+                else TopoSortDepthStats.parse_tokens
+            )
+
+        valid_idx = torch.nonzero(has_accuracy, as_tuple=False).squeeze(-1).tolist()
+        rows = []
+        for idx in valid_idx[:max_samples]:
+            true_seq = input_tokens[idx].detach().cpu()
+            pred_seq = pred_tokens[idx].detach().cpu()
+            comp_mask = accuracy_mask[idx].detach().cpu()
+            attn = attention_mask[idx].detach().cpu() if attention_mask is not None else None
+
+            prefix_ids, target_completion = self._split_prefix_completion(
+                true_seq, comp_mask, attn
+            )
+            _, predicted_completion = self._split_prefix_completion(pred_seq, comp_mask, attn)
+
+            if parser is not None:
+                ok, _, _ = parser(pred_seq.tolist())
+                rows.append(
+                    [
+                        self._render_token_ids(prefix_ids),
+                        self._render_token_ids(target_completion),
+                        self._render_token_ids(predicted_completion),
+                        str(bool(ok)),
+                    ]
+                )
+            else:
+                rows.append(
+                    [
+                        self._render_token_ids(prefix_ids),
+                        self._render_token_ids(target_completion),
+                        self._render_token_ids(predicted_completion),
+                    ]
+                )
+
+        if not rows:
+            return
+
+        if parser is not None:
+            columns = ["prefix", "target_completion", "predicted_completion", "topo_ok"]
+        else:
+            columns = ["prefix", "target_completion", "predicted_completion"]
+        include_step = bool(
+            omegaconf.OmegaConf.select(
+                self.config, "eval.log_validation_completions_include_step", default=False
+            )
+        )
+        if include_step:
+            columns = ["global_step"] + columns
+            rows = [[int(self.global_step)] + row for row in rows]
+
+        aggregate = bool(
+            omegaconf.OmegaConf.select(
+                self.config, "eval.log_validation_completions_aggregate", default=True
+            )
+        )
+        if aggregate:
+            if self._val_completion_table_columns != columns:
+                self._val_completion_table_columns = columns
+                self._val_completion_table_rows = []
+            self._val_completion_table_rows.extend(rows)
+            max_rows = int(
+                omegaconf.OmegaConf.select(
+                    self.config, "eval.log_validation_completions_max_rows", default=256
+                )
+            )
+            if max_rows > 0 and len(self._val_completion_table_rows) > max_rows:
+                self._val_completion_table_rows = self._val_completion_table_rows[-max_rows:]
+            data = self._val_completion_table_rows
+        else:
+            data = rows
+
+        table_key = str(
+            omegaconf.OmegaConf.select(
+                self.config, "eval.log_validation_completions_table_key", default="val/completions"
+            )
+        )
+        logger.log_table(
+            key=table_key,
+            columns=columns,
+            data=data,
+        )
+        self._maybe_update_wandb_summary_table(logger, table_key, columns, data)
+
+    def _maybe_update_wandb_summary_table(self, logger, table_key, columns, data):
+        experiment = getattr(logger, "experiment", None)
+        if experiment is None:
+            return
+        summary = getattr(experiment, "summary", None)
+        if summary is None:
+            return
+        try:
+            import wandb
+        except Exception:
+            return
+
+        summary_key = str(
+            omegaconf.OmegaConf.select(
+                self.config,
+                "eval.log_validation_completions_summary_key",
+                default=f"{table_key}_latest",
+            )
+        )
+        try:
+            summary[summary_key] = wandb.Table(columns=columns, data=data)
+        except Exception:
+            return
 
     def nll(
         self,
