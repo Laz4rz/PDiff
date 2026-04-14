@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import functools
-import hashlib
-import json
 import os
 import shutil
 from typing import Optional
@@ -17,13 +15,13 @@ import transformers
 from .. import utils
 from .datasets import (
     get_brevo_dataset,
-    iter_brevo_split_records,
     generate_prefix_dataset,
     generate_synthetic_dataset,
     get_lambada_test_dataset,
     get_text8_dataset,
     get_star_graph_dataset,
 )
+from .cached_synthetic_builders import get_cached_synthetic_builder
 from .processing import (
     _apply_detokenizer,
     _group_texts,
@@ -95,56 +93,33 @@ def get_dataset(
             f"{chunk_tag}{eos_tag}{min_len_tag}.dat"
         )
     processing_streaming = streaming
-    brevo_cfg = dict(dataset_config or {}) if dataset_name == "brevo" else {}
-    brevo_force_regenerate = (
-        dataset_name == "brevo" and bool(brevo_cfg.get("force_regenerate", False))
+    cached_synth_builder = get_cached_synthetic_builder(
+        dataset_name, dataset_config, tokenize=tokenize
     )
-    brevo_generation_cfg = (
-        {
-            "training_samples": int(brevo_cfg.get("training_samples", 200_000)),
-            "evaluation_samples": int(brevo_cfg.get("evaluation_samples", 20_000)),
-            "graph_N": int(brevo_cfg.get("graph_N", 110)),
-            "enforce_n_for_training": bool(
-                brevo_cfg.get("enforce_n_for_training", False)
-            ),
-            "multi_token": bool(brevo_cfg.get("multi_token", False)),
-            "tokenize": bool(tokenize),
-        }
-        if dataset_name == "brevo"
-        else {}
-    )
-    if dataset_name == "brevo":
-        # Include BREVO generation config in tokenized-cache key to avoid stale reuse
-        # when e.g. training_samples/graph_N changes.
-        brevo_cfg_key = hashlib.sha1(
-            json.dumps(brevo_generation_cfg, sort_keys=True).encode("utf-8")
-        ).hexdigest()[:12]
-        filename = filename.replace(".dat", f"_cfg{brevo_cfg_key}.dat")
+    if cached_synth_builder is not None:
+        filename = cached_synth_builder.cache_filename(filename)
     _path = os.path.join(cache_dir, filename)
-    if brevo_force_regenerate and os.path.exists(_path):
-        LOGGER.info(
-            "BREVO force_regenerate=True; removing existing cache at: %s",
-            _path,
-        )
-        if os.path.isdir(_path):
-            shutil.rmtree(_path)
-        else:
-            os.remove(_path)
-    brevo_cached_streaming = (
-        dataset_name == "brevo"
-        and streaming
-        and bool(brevo_cfg.get("cached_streaming", False))
+    if cached_synth_builder is not None:
+        cached_synth_builder.maybe_remove_existing_cache(_path)
+
+    use_cached_streaming = (
+        cached_synth_builder is not None
+        and cached_synth_builder.should_use_cached_streaming(streaming=streaming)
     )
-    if brevo_cached_streaming and not brevo_force_regenerate:
+    if use_cached_streaming:
         if utils.fsspec_exists(_path):
             LOGGER.info(
-                "Loading BREVO cached tokenized Arrow split from: %s",
+                "Loading %s cached tokenized Arrow split from: %s",
+                dataset_name.upper(),
                 _path,
             )
             # Arrow datasets loaded from disk are memory-mapped by HF Datasets.
             return datasets.load_from_disk(_path).with_format("torch")
 
-    if utils.fsspec_exists(_path) and LOAD_FROM_CACHE and not brevo_force_regenerate:
+    can_reuse_cache = (
+        cached_synth_builder is None or cached_synth_builder.should_reuse_cache()
+    )
+    if utils.fsspec_exists(_path) and LOAD_FROM_CACHE and can_reuse_cache:
         LOGGER.info("Loading data from: %s", _path)
         return datasets.load_from_disk(_path).with_format("torch")
     LOGGER.info("Generating new data at: %s", _path)
@@ -154,7 +129,7 @@ def get_dataset(
     if mode == "train" and crop_train:
         block_size *= 2
 
-    brevo_cached_streaming_needs_build = False
+    cached_synthetic_streaming_needs_build = False
     if dataset_name == "wikitext103":
         dataset = datasets.load_dataset(
             "wikitext",
@@ -239,18 +214,19 @@ def get_dataset(
             )
         dataset = get_star_graph_dataset(dataset_config=dataset_config)
     elif dataset_name == "brevo":
-        cached_streaming = bool(brevo_cfg.get("cached_streaming", False))
-        if streaming and cached_streaming:
+        if cached_synth_builder is None:
+            raise ValueError("BREVO dataset requires `data.dataset_config`.")
+        if streaming and cached_synth_builder.cached_streaming:
             # Build in bounded shards instead of one monolithic in-memory split.
             dataset = None
-            brevo_cached_streaming_needs_build = True
+            cached_synthetic_streaming_needs_build = True
             processing_streaming = False
         else:
             if streaming:
                 # datasets==3.5.0 IterableDataset.from_generator() uses HF_DATASETS_CACHE.
                 datasets.config.HF_DATASETS_CACHE = cache_dir
             dataset = get_brevo_dataset(
-                dataset_config=brevo_cfg,
+                dataset_config=cached_synth_builder.dataset_config,
                 split=mode,
                 streaming=streaming,
             )
@@ -455,20 +431,19 @@ def get_dataset(
             return ds.remove_columns("text")
         return ds
 
-    if brevo_cached_streaming_needs_build:
-        split_size = (
-            int(brevo_generation_cfg["training_samples"])
-            if mode == "train"
-            else int(brevo_generation_cfg["evaluation_samples"])
-        )
-        if split_size <= 0:
-            raise ValueError(f"BREVO split size must be > 0 for mode={mode}")
+    if cached_synthetic_streaming_needs_build:
+        if cached_synth_builder is None:
+            raise RuntimeError(
+                "Internal error: cached synthetic builder missing for shard build."
+            )
 
-        num_shards_cfg = brevo_cfg.get("cached_streaming_num_shards", None)
-        if num_shards_cfg is None:
-            num_shards = max(1, (split_size + 20_000 - 1) // 20_000)
-        else:
-            num_shards = int(num_shards_cfg)
+        split_size = cached_synth_builder.split_size(mode)
+        if split_size <= 0:
+            raise ValueError(
+                f"{dataset_name.upper()} split size must be > 0 for mode={mode}"
+            )
+
+        num_shards = cached_synth_builder.cached_streaming_num_shards
         if num_shards <= 0:
             raise ValueError(
                 f"`cached_streaming_num_shards` must be > 0, got {num_shards}"
@@ -477,26 +452,30 @@ def get_dataset(
         shard_size = (split_size + num_shards - 1) // num_shards
 
         LOGGER.info(
-            "Building BREVO cached tokenized split in %d shard(s) of up to %d examples",
+            "Building %s cached tokenized split in %d shard(s) of up to %d examples",
+            dataset_name.upper(),
             num_shards,
             shard_size,
         )
 
-        assert dataset_name == "brevo"
-        shard_root = os.path.join(cache_dir, f".brevo_cached_build_{mode}_{brevo_cfg_key}")
+        shard_root = os.path.join(
+            cache_dir,
+            f".{cached_synth_builder.dataset_name}_cached_build_{mode}_{cached_synth_builder.cache_key}",
+        )
         if os.path.isdir(shard_root):
             shutil.rmtree(shard_root)
         os.makedirs(shard_root, exist_ok=True)
 
         shard_paths = []
-        split_records = iter_brevo_split_records(dataset_config=brevo_cfg, split=mode)
+        split_records = cached_synth_builder.iter_split_records(mode)
         remaining = split_size
 
         for shard_idx in range(num_shards):
             current_size = min(shard_size, remaining)
             remaining -= current_size
             LOGGER.info(
-                "Generating BREVO %s shard %d/%d (%d examples)",
+                "Generating %s %s shard %d/%d (%d examples)",
+                dataset_name.upper(),
                 mode,
                 shard_idx + 1,
                 num_shards,
@@ -517,7 +496,10 @@ def get_dataset(
                 batched=True,
                 num_proc=num_proc,
                 load_from_cache_file=LOAD_FROM_CACHE,
-                desc=f"Tokenizing BREVO {mode} shard {shard_idx + 1}/{num_shards}",
+                desc=(
+                    f"Tokenizing {dataset_name.upper()} {mode} shard "
+                    f"{shard_idx + 1}/{num_shards}"
+                ),
             )
             shard_tokenized = _remove_raw_columns(shard_tokenized)
 
@@ -533,7 +515,10 @@ def get_dataset(
                     _has_min_length,
                     num_proc=num_proc,
                     load_from_cache_file=LOAD_FROM_CACHE,
-                    desc=f"Filtering BREVO {mode} shard {shard_idx + 1}/{num_shards}",
+                    desc=(
+                        f"Filtering {dataset_name.upper()} {mode} shard "
+                        f"{shard_idx + 1}/{num_shards}"
+                    ),
                 )
 
             shard_path = os.path.join(shard_root, f"shard_{shard_idx:05d}")
@@ -547,7 +532,8 @@ def get_dataset(
         shutil.rmtree(shard_root, ignore_errors=True)
 
         LOGGER.info(
-            "Loading BREVO cached tokenized Arrow split from: %s",
+            "Loading %s cached tokenized Arrow split from: %s",
+            dataset_name.upper(),
             _path,
         )
         return datasets.load_from_disk(_path).with_format("torch")
@@ -582,9 +568,10 @@ def get_dataset(
     if not wrap:
         if not processing_streaming:
             tokenized_dataset.save_to_disk(_path)
-            if brevo_cached_streaming:
+            if use_cached_streaming:
                 LOGGER.info(
-                    "Loading BREVO cached tokenized Arrow split from: %s",
+                    "Loading %s cached tokenized Arrow split from: %s",
+                    dataset_name.upper(),
                     _path,
                 )
                 return datasets.load_from_disk(_path).with_format("torch")
