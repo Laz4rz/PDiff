@@ -58,23 +58,42 @@ class CachedSyntheticDatasetBuilder(ABC):
     def maybe_remove_existing_cache(self, cache_path: str) -> None:
         if not self.force_regenerate:
             return
-        if not os.path.exists(cache_path):
+        metadata_path = self.cache_metadata_path(cache_path)
+        if not os.path.exists(cache_path) and not os.path.exists(metadata_path):
             return
         LOGGER.info(
             "%s force_regenerate=True; removing existing cache at: %s",
             self.dataset_name.upper(),
             cache_path,
         )
-        if os.path.isdir(cache_path):
-            shutil.rmtree(cache_path)
-        else:
-            os.remove(cache_path)
+        if os.path.exists(cache_path):
+            if os.path.isdir(cache_path):
+                shutil.rmtree(cache_path)
+            else:
+                os.remove(cache_path)
+        if os.path.exists(metadata_path):
+            os.remove(metadata_path)
 
     def should_reuse_cache(self) -> bool:
         return not self.force_regenerate
 
     def should_use_cached_streaming(self, *, streaming: bool) -> bool:
         return streaming and self.cached_streaming and self.should_reuse_cache()
+
+    def cache_metadata_path(self, cache_path: str) -> str:
+        return f"{cache_path}.meta.json"
+
+    def write_cache_metadata(self, cache_path: str, split: str) -> None:
+        payload = {
+            "dataset_name": self.dataset_name,
+            "cache_key": self.cache_key,
+            "split": split,
+            "generation_config": self._generation_config,
+            "dataset_config": self.dataset_config,
+        }
+        metadata_path = self.cache_metadata_path(cache_path)
+        with open(metadata_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, sort_keys=True)
 
 
 class BrevoCachedDatasetBuilder(CachedSyntheticDatasetBuilder):
@@ -115,4 +134,3 @@ def get_cached_synthetic_builder(
             raise ValueError("BREVO dataset requires `data.dataset_config`.")
         return BrevoCachedDatasetBuilder(dataset_config, tokenize=tokenize)
     return None
-

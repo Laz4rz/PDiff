@@ -10,6 +10,7 @@ length: 128
 n_blocks: 12
 n_heads: 6
 scale_by_sigma: True
+use_time_conditioning: True
 dropout: 0.1
 tie_word_embeddings: False
 vocab_lookup: True

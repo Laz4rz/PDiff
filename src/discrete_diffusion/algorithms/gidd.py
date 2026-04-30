@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import hydra.utils
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -292,9 +295,6 @@ class GIDD(trainer_base.TrainerBase):
         super().__init__(config, tokenizer, vocab_size=vocab_size)
         self.save_hyperparameters()
 
-        if not getattr(self.config.algo, "time_conditioning", False):
-            raise ValueError("GIDD requires algo.time_conditioning=True")
-
         self._mask_tok = _MaskTokenizerAdapter(
             base_tokenizer=tokenizer, vocab_size=vocab_size, mask_token_id=self.mask_id
         )
@@ -327,6 +327,9 @@ class GIDD(trainer_base.TrainerBase):
 
         self._loglinear = LogLinear()
         self._val_gen_acc_batches_seen = 0
+        self._val_sampling_trace_batches_seen = 0
+        self._extra_eval_samplers = None
+        self._val_extra_gen_acc = {}
         self._val_completion_table_rows = []
         self._val_completion_table_columns = None
 
@@ -363,6 +366,7 @@ class GIDD(trainer_base.TrainerBase):
         train_mode=False,
         accuracy_tokens=None,
         noise_tokens=None,
+        attention_mask=None,
     ):
         input_tokens, valid_tokens = self._process_model_input(x0, valid_tokens)
         loss, pred_tokens = self.nll(
@@ -371,6 +375,7 @@ class GIDD(trainer_base.TrainerBase):
             train_mode,
             valid_tokens=valid_tokens,
             noise_tokens=noise_tokens,
+            attention_mask=attention_mask,
             return_predictions=True,
         )
         assert loss.ndim == 2
@@ -454,6 +459,7 @@ class GIDD(trainer_base.TrainerBase):
             train_mode=True,
             accuracy_tokens=accuracy_tokens,
             noise_tokens=noise_tokens,
+            attention_mask=batch["attention_mask"],
         )
         self.metrics.update_train(
             losses.nlls,
@@ -476,6 +482,8 @@ class GIDD(trainer_base.TrainerBase):
     def on_validation_epoch_start(self):
         super().on_validation_epoch_start()
         self._val_gen_acc_batches_seen = 0
+        self._val_sampling_trace_batches_seen = 0
+        self._val_extra_gen_acc = {}
 
     def on_train_epoch_end(self):
         super().on_train_epoch_end()
@@ -525,6 +533,7 @@ class GIDD(trainer_base.TrainerBase):
             valid_tokens,
             accuracy_tokens=accuracy_tokens,
             noise_tokens=noise_tokens,
+            attention_mask=batch["attention_mask"],
         )
         self.metrics.update_valid(
             losses.nlls,
@@ -535,13 +544,24 @@ class GIDD(trainer_base.TrainerBase):
             losses.num_accuracy_samples,
         )
         if self._should_compute_generation_accuracy(accuracy_tokens):
-            gen_metrics = self._compute_generation_accuracy(
-                batch["input_ids"],
-                accuracy_tokens,
-                batch.get("attention_mask", None),
-            )
-            if gen_metrics is not None:
-                self.metrics.update_valid_gen(*gen_metrics)
+            if self._extra_eval_sampler_specs():
+                computed_generation = self._compute_extra_generation_accuracies(
+                    batch["input_ids"],
+                    accuracy_tokens,
+                    batch.get("attention_mask", None),
+                    log_first=True,
+                )
+            else:
+                computed_generation = False
+                gen_metrics = self._compute_generation_accuracy(
+                    batch["input_ids"],
+                    accuracy_tokens,
+                    batch.get("attention_mask", None),
+                )
+                if gen_metrics is not None:
+                    self.metrics.update_valid_gen(*gen_metrics)
+                    computed_generation = True
+            if computed_generation:
                 self._val_gen_acc_batches_seen += 1
         return losses.loss
 
@@ -587,6 +607,7 @@ class GIDD(trainer_base.TrainerBase):
                 on_epoch=True,
                 sync_dist=True,
             )
+        self._log_extra_generation_accuracies()
 
     def _should_compute_generation_accuracy(self, accuracy_tokens):
         if accuracy_tokens is None:
@@ -601,11 +622,240 @@ class GIDD(trainer_base.TrainerBase):
             return False
         if self._val_gen_acc_batches_seen >= max_batches:
             return False
+        if self._extra_eval_sampler_specs():
+            return True
         sampler = self._create_sampler()
         return sampler is not None
 
+    def _should_log_sampling_steps(self):
+        if not bool(
+            omegaconf.OmegaConf.select(
+                self.config, "eval.log_sampling_steps", default=False
+            )
+        ):
+            return False
+        if self.trainer is None:
+            return False
+        if self.trainer.sanity_checking:
+            return False
+        if not self.trainer.is_global_zero:
+            return False
+        max_batches = int(
+            omegaconf.OmegaConf.select(
+                self.config, "eval.log_sampling_steps_max_batches", default=1
+            )
+        )
+        if self._val_sampling_trace_batches_seen >= max_batches:
+            return False
+        return True
+
+    def _extra_eval_sampler_specs(self):
+        specs = omegaconf.OmegaConf.select(
+            self.config, "eval.samplers", default=None
+        )
+        if not specs:
+            return []
+        return list(specs)
+
+    def _sampler_spec_config_and_name(self, spec, index: int):
+        name = omegaconf.OmegaConf.select(spec, "name", default=None)
+        sampler_cfg = omegaconf.OmegaConf.select(spec, "sampler", default=None)
+        if sampler_cfg is None:
+            container = omegaconf.OmegaConf.to_container(spec, resolve=False)
+            if isinstance(container, dict):
+                container.pop("name", None)
+            sampler_cfg = omegaconf.OmegaConf.create(container)
+
+        target = omegaconf.OmegaConf.select(sampler_cfg, "_target_", default=None)
+        if target is None:
+            raise ValueError(
+                "Each eval.samplers entry must either be a sampler config with "
+                "'_target_' or a mapping with 'name' and 'sampler._target_'."
+            )
+        if name is None:
+            name = str(target).rsplit(".", 1)[-1]
+        name = self._sampler_name_with_args(name, sampler_cfg)
+        return sampler_cfg, self._sanitize_metric_name(name, fallback=f"sampler_{index}")
+
+    def _sampler_name_with_args(self, name, sampler_cfg):
+        cfg = omegaconf.OmegaConf.to_container(sampler_cfg, resolve=True)
+        if not isinstance(cfg, dict):
+            return name
+
+        arg_parts = []
+        for key, value in sorted(cfg.items()):
+            if str(key).startswith("_"):
+                continue
+            arg_parts.append(
+                f"{self._sanitize_metric_name(key, fallback='arg')}_"
+                f"{self._format_sampler_arg_value(value)}"
+            )
+        if not arg_parts:
+            return name
+        return f"{name}__{'__'.join(arg_parts)}"
+
+    def _format_sampler_arg_value(self, value):
+        if isinstance(value, bool):
+            text = "true" if value else "false"
+        elif value is None:
+            text = "none"
+        elif isinstance(value, float):
+            text = f"{value:g}"
+        elif isinstance(value, (list, tuple)):
+            text = "-".join(self._format_sampler_arg_value(item) for item in value)
+        elif isinstance(value, dict):
+            pieces = [
+                f"{self._sanitize_metric_name(key, fallback='key')}_"
+                f"{self._format_sampler_arg_value(val)}"
+                for key, val in sorted(value.items())
+            ]
+            text = "-".join(pieces)
+        else:
+            text = str(value)
+        return self._sanitize_metric_name(text, fallback="value")
+
+    def _sanitize_metric_name(self, name, fallback: str):
+        name = str(name or fallback)
+        clean = "".join(
+            char if char.isalnum() or char in {"_", "-"} else "_" for char in name
+        ).strip("_")
+        return clean or fallback
+
+    def _create_extra_eval_samplers(self):
+        if self._extra_eval_samplers is not None:
+            return self._extra_eval_samplers
+
+        samplers = []
+        seen_names = set()
+        for index, spec in enumerate(self._extra_eval_sampler_specs()):
+            sampler_cfg, name = self._sampler_spec_config_and_name(spec, index)
+            if name in seen_names:
+                name = f"{name}_{index}"
+            seen_names.add(name)
+            sampler = hydra.utils.instantiate(
+                sampler_cfg,
+                self.config,
+                forward_process=getattr(self, "_forward_process", None),
+                _recursive_=False,
+            )
+            samplers.append((name, sampler))
+        self._extra_eval_samplers = samplers
+        return samplers
+
+    def _compute_extra_generation_accuracies(
+        self, input_tokens, accuracy_tokens, attention_mask=None, log_first=False
+    ):
+        computed = False
+        for index, (name, sampler) in enumerate(self._create_extra_eval_samplers()):
+            log_this_sampler = log_first and index == 0
+            gen_metrics = self._compute_generation_accuracy(
+                input_tokens,
+                accuracy_tokens,
+                attention_mask,
+                sampler=sampler,
+                log_completions=log_this_sampler,
+                log_sampling_steps=log_this_sampler,
+            )
+            if gen_metrics is not None:
+                self._update_extra_generation_accuracy(name, gen_metrics)
+                computed = True
+        return computed
+
+    def _update_extra_generation_accuracy(self, name, gen_metrics):
+        acc = self._val_extra_gen_acc.setdefault(name, {})
+        metric_names = (
+            "correct_tokens",
+            "num_accuracy_tokens",
+            "correct_samples",
+            "num_accuracy_samples",
+        )
+        for metric_name, value in zip(metric_names, gen_metrics):
+            if value is None:
+                continue
+            value = value.detach().to(device=self.device, dtype=torch.float64)
+            if metric_name not in acc:
+                acc[metric_name] = torch.zeros((), device=self.device, dtype=torch.float64)
+            acc[metric_name] = acc[metric_name] + value
+
+    def _distributed_sum(self, value: torch.Tensor) -> torch.Tensor:
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            value = value.clone()
+            torch.distributed.all_reduce(value, op=torch.distributed.ReduceOp.SUM)
+        return value
+
+    def _log_extra_generation_accuracies(self):
+        for name, acc in self._val_extra_gen_acc.items():
+            if "correct_tokens" in acc and "num_accuracy_tokens" in acc:
+                denom = self._distributed_sum(acc["num_accuracy_tokens"])
+                if denom > 0:
+                    correct = self._distributed_sum(acc["correct_tokens"])
+                    self.log(
+                        name=f"val/gen_acc_token/{name}",
+                        value=correct / denom,
+                        on_step=False,
+                        on_epoch=True,
+                        sync_dist=False,
+                    )
+            if "correct_samples" in acc and "num_accuracy_samples" in acc:
+                denom = self._distributed_sum(acc["num_accuracy_samples"])
+                if denom > 0:
+                    correct = self._distributed_sum(acc["correct_samples"])
+                    self.log(
+                        name=f"val/gen_acc_sample/{name}",
+                        value=correct / denom,
+                        on_step=False,
+                        on_epoch=True,
+                        sync_dist=False,
+                    )
+
+    def _write_sampling_step_trace(
+        self,
+        input_tokens: torch.Tensor,
+        initial_noised: torch.Tensor,
+        step_outputs: list[torch.Tensor],
+    ):
+        out_dir = Path.cwd() / "validation_samples"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        path = out_dir / (
+            "sampling_step_"
+            f"epoch{int(self.current_epoch)}_"
+            f"global_step{int(self.global_step)}_"
+            f"batch{int(self._val_sampling_trace_batches_seen)}.txt"
+        )
+
+        def _line_from_tokens(tokens_1d: torch.Tensor) -> str:
+            return " ".join(str(int(tok)) for tok in tokens_1d.tolist())
+
+        with path.open("w", encoding="utf-8") as f:
+            for idx in range(input_tokens.shape[0]):
+                f.write(f"{idx + 1}.\n")
+                f.write(f"-1: {_line_from_tokens(input_tokens[idx])}\n")
+                f.write(f"0: {_line_from_tokens(initial_noised[idx])}\n")
+                for step_idx, step_tokens in enumerate(step_outputs, start=1):
+                    f.write(f"{step_idx}: {_line_from_tokens(step_tokens[idx])}\n")
+                if idx + 1 < input_tokens.shape[0]:
+                    f.write("\n")
+
+        self._val_sampling_trace_batches_seen += 1
+        if self.trainer is not None and self.trainer.is_global_zero:
+            self.log(
+                name="val/sampling_trace_logged",
+                value=1.0,
+                on_step=False,
+                on_epoch=True,
+                sync_dist=False,
+            )
+
     @torch.no_grad()
-    def _compute_generation_accuracy(self, input_tokens, accuracy_tokens, attention_mask=None):
+    def _compute_generation_accuracy(
+        self,
+        input_tokens,
+        accuracy_tokens,
+        attention_mask=None,
+        sampler=None,
+        log_completions=True,
+        log_sampling_steps=True,
+    ):
         method = str(self.config.eval.generation_accuracy_method)
         accuracy_mask = accuracy_tokens.to(device=input_tokens.device, dtype=torch.bool)
         if self.ignore_bos:
@@ -627,31 +877,57 @@ class GIDD(trainer_base.TrainerBase):
             eps = float(getattr(self.config.algo, "t_eps", 1e-5))
         eps = float(eps)
 
-        sampler = self._create_sampler()
+        if sampler is None:
+            sampler = self._create_sampler()
         if sampler is None:
             return None
         bsz = input_tokens.shape[0]
-        timesteps = torch.linspace(1 - eps, eps, num_steps + 1, device=self.device)
-        z_t = self.hybrid_noise.sample_prior((bsz, self.num_tokens)).to(self.device)
         inject_bos = getattr(self.config.sampling, "inject_bos", True)
-        if inject_bos:
-            z_t[:, 0] = self.tokenizer.bos_token_id
         fixed_mask = ~accuracy_mask
-        z_t = torch.where(fixed_mask, input_tokens, z_t)
-        ones = torch.ones(bsz, device=self.device)
-        for i in range(num_steps):
-            t = timesteps[i] * ones
-            s = timesteps[i + 1] * ones
-            z_t = sampler.compute_posterior(self, z_t, t, s)
-            z_t = torch.where(fixed_mask, input_tokens, z_t)
-        self._maybe_log_validation_completions(
-            input_tokens=input_tokens,
-            pred_tokens=z_t,
-            accuracy_mask=accuracy_mask,
-            has_accuracy=has_accuracy,
+
+        trace_count = 0
+        if log_sampling_steps and self._should_log_sampling_steps():
+            max_samples = int(
+                omegaconf.OmegaConf.select(
+                    self.config, "eval.log_sampling_steps_max_samples", default=8
+                )
+            )
+            trace_count = min(max_samples, int(has_accuracy.sum().item()))
+        record_steps = trace_count > 0
+
+        generated = sampler.generate(
+            model=self,
+            num_samples=bsz,
+            num_steps=num_steps,
+            eps=eps,
+            inject_bos=inject_bos,
+            record_steps=record_steps,
+            fixed_tokens=input_tokens,
+            fixed_mask=fixed_mask,
             attention_mask=attention_mask,
-            method=method,
         )
+
+        if record_steps:
+            trajectory = generated
+            z_t = trajectory[-1].to(self.device)
+            trace_slice = slice(0, trace_count)
+            self._write_sampling_step_trace(
+                input_tokens=input_tokens[trace_slice].detach().cpu(),
+                initial_noised=trajectory[0, trace_slice],
+                step_outputs=[step[trace_slice] for step in trajectory[1:]],
+            )
+        else:
+            z_t = generated
+
+        if log_completions:
+            self._maybe_log_validation_completions(
+                input_tokens=input_tokens,
+                pred_tokens=z_t,
+                accuracy_mask=accuracy_mask,
+                has_accuracy=has_accuracy,
+                attention_mask=attention_mask,
+                method=method,
+            )
 
         if method == "brevo_topo":
             # Topological correctness is sample-level only (answer order is non-unique).
@@ -890,6 +1166,7 @@ class GIDD(trainer_base.TrainerBase):
         train_mode=False,
         valid_tokens=None,
         noise_tokens=None,
+        attention_mask=None,
         return_predictions=False,
     ):
         t = self._sample_t(input_tokens.shape[0])
@@ -905,7 +1182,13 @@ class GIDD(trainer_base.TrainerBase):
         sigma = self._sigma_from_alphat(alpha_t.unsqueeze(-1))
 
         sigma = self._process_sigma(sigma)
-        logits = self.backbone(z_t, sigma)
+        if attention_mask is None:
+            logits = self.backbone(z_t, sigma)
+        else:
+            model_attention_mask = attention_mask.to(
+                device=input_tokens.device, dtype=torch.bool
+            )
+            logits = self.backbone(z_t, sigma, attention_mask=model_attention_mask)
         pred_tokens = None
         if return_predictions:
             with torch.no_grad():

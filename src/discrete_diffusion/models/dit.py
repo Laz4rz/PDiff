@@ -82,6 +82,9 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
         self.vocab_size = vocab_size
         dim = config.model.hidden_size
         cond_dim = config.model.cond_dim
+        self.use_time_conditioning = bool(
+            getattr(config.model, "use_time_conditioning", True)
+        )
         self.vocab_embed = EmbeddingLayer(dim, vocab_size)
         if not self.causal:
             self.sigma_map = TimestepEmbedder(cond_dim)
@@ -121,12 +124,37 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
         else:
             return bias_dropout_add_scale_fused_inference
 
-    def forward(self, x, sigma):
+    def _build_attention_mask(self, attention_mask, seq_len, device):
+        if attention_mask is None:
+            return None
+        attention_mask = attention_mask.to(device=device, dtype=torch.bool)
+        if attention_mask.ndim == 2:
+            if attention_mask.shape[1] != seq_len:
+                raise ValueError(
+                    "2D attention_mask must have sequence length "
+                    f"{seq_len}, got {attention_mask.shape[1]}"
+                )
+            return attention_mask[:, None, :].expand(-1, seq_len, -1)
+        if attention_mask.ndim == 3:
+            if attention_mask.shape[1:] != (seq_len, seq_len):
+                raise ValueError(
+                    "3D attention_mask must have shape "
+                    f"(batch, {seq_len}, {seq_len}), got {tuple(attention_mask.shape)}"
+                )
+            return attention_mask
+        raise ValueError(
+            "attention_mask must have shape (batch, seq_len) or "
+            "(batch, seq_len, seq_len)."
+        )
+
+    def forward(self, x, sigma, attention_mask=None):
         """Forward pass of the DiT.
 
         Args:
             x: Input token indices [batch, seq_len].
             sigma: Noise level/time embedding [batch] or [batch, seq_len].
+            attention_mask: Optional valid attention-token mask [batch, seq_len] or
+                attention mask [batch, seq_len, seq_len].
 
         Returns:
             Tensor: Logits [batch, seq_len, vocab_size].
@@ -135,13 +163,18 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
         if self.causal:
             t_cond = None
         else:
+            if not self.use_time_conditioning:
+                sigma = torch.zeros_like(sigma)
             t_cond = F.silu(self.sigma_map(sigma))
 
         rotary_cos_sin = self.rotary_emb(x)
+        attn_mask = self._build_attention_mask(
+            attention_mask, seq_len=x.shape[1], device=x.device
+        )
 
         with torch.amp.autocast("cuda", dtype=torch.bfloat16):
             for i in range(len(self.blocks)):
-                x = self.blocks[i](x, rotary_cos_sin, c=t_cond)
+                x = self.blocks[i](x, rotary_cos_sin, c=t_cond, attn_mask=attn_mask)
             x = self.output_layer(x, c=t_cond)
 
         return x

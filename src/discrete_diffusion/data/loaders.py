@@ -113,6 +113,13 @@ def get_dataset(
                 dataset_name.upper(),
                 _path,
             )
+            metadata_path = cached_synth_builder.cache_metadata_path(_path)
+            if os.path.exists(metadata_path):
+                LOGGER.info(
+                    "%s cache metadata: %s",
+                    dataset_name.upper(),
+                    metadata_path,
+                )
             # Arrow datasets loaded from disk are memory-mapped by HF Datasets.
             return datasets.load_from_disk(_path).with_format("torch")
 
@@ -529,6 +536,7 @@ def get_dataset(
             [datasets.load_from_disk(path) for path in shard_paths]
         )
         merged.save_to_disk(_path)
+        cached_synth_builder.write_cache_metadata(_path, mode)
         shutil.rmtree(shard_root, ignore_errors=True)
 
         LOGGER.info(
@@ -568,6 +576,8 @@ def get_dataset(
     if not wrap:
         if not processing_streaming:
             tokenized_dataset.save_to_disk(_path)
+            if cached_synth_builder is not None:
+                cached_synth_builder.write_cache_metadata(_path, mode)
             if use_cached_streaming:
                 LOGGER.info(
                     "Loading %s cached tokenized Arrow split from: %s",

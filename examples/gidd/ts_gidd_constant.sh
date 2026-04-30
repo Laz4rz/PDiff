@@ -6,8 +6,9 @@ cd "${REPO_ROOT}" || exit 1
 
 export PYTHONPATH="${REPO_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
 
-export CUDA_VISIBLE_DEVICES="0,1,2,3"
+export CUDA_VISIBLE_DEVICES="0"
 export P_UNIFORM=1.0
+export CUDA_LAUNCH_BLOCKING=1
 
 export WANDB_MODE="online"
 export WANDB_DIR="${REPO_ROOT}/wandb_logs"
@@ -30,15 +31,15 @@ uv run python -u -m discrete_diffusion \
   lr_scheduler=cosine_decay_warmup \
   strategy=ddp \
   trainer.deterministic=false \
-  trainer.num_nodes=1 trainer.devices=4 \
+  trainer.num_nodes=1 trainer.devices=1 \
   trainer.max_epochs=1 \
   loader.global_batch_size=512 \
   loader.batch_size=32 \
   loader.eval_batch_size=4 \
   trainer.log_every_n_steps=10 \
   trainer.val_check_interval=1000 \
-  trainer.limit_train_batches=0.05 \
-  trainer.limit_val_batches=0.05 \
+  trainer.limit_train_batches=0.01 \
+  trainer.limit_val_batches=0.01 \
   callbacks.checkpoint_every_n_steps.every_n_train_steps=5000 \
   trainer.precision=bf16-mixed \
   training.torch_compile=false \

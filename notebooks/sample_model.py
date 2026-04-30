@@ -99,9 +99,26 @@ def _tokenize_prefix_prompts(
     num_samples: int,
 ) -> tuple[list[str], list[list[int]]]:
     prompts = _expand_prefix_prompts(prefix_prompts, num_samples)
-    tokenized = tokenizer(
-        prompts, add_special_tokens=False, return_attention_mask=False
-    )["input_ids"]
+    try:
+        tokenized = tokenizer(
+            prompts, add_special_tokens=False, return_attention_mask=False
+        )["input_ids"]
+    except (NotImplementedError, TypeError, AttributeError):
+        # BrevoDummyTokenizer exposes decode-only behavior; treat prompts as pretokenized
+        # whitespace-delimited ids in that case.
+        tokenized = []
+        for prompt in prompts:
+            stripped = prompt.strip()
+            if not stripped:
+                tokenized.append([])
+                continue
+            try:
+                tokenized.append([int(tok) for tok in stripped.split()])
+            except ValueError as exc:
+                raise TypeError(
+                    "Prefix prompts must be whitespace-delimited token ids when tokenizer "
+                    "does not support tokenization."
+                ) from exc
     bos_id = tokenizer.bos_token_id
     prefix_token_ids = []
     for ids in tokenized:
@@ -112,16 +129,27 @@ def _tokenize_prefix_prompts(
     return prompts, prefix_token_ids
 
 
-def _apply_prefix_constraints(z_t: torch.Tensor, prefix_token_ids: Sequence[Sequence[int]]):
-    seq_len = z_t.shape[1]
+def _build_prefix_constraints(
+    prefix_token_ids: Sequence[Sequence[int]],
+    *,
+    num_samples: int,
+    seq_len: int,
+    device,
+    dtype,
+):
+    fixed_tokens = torch.zeros((num_samples, seq_len), device=device, dtype=dtype)
+    fixed_mask = torch.zeros((num_samples, seq_len), device=device, dtype=torch.bool)
     for row_idx, ids in enumerate(prefix_token_ids):
+        if row_idx >= num_samples:
+            break
         prefix_len = min(len(ids), seq_len)
         if prefix_len == 0:
             continue
-        z_t[row_idx, :prefix_len] = torch.as_tensor(
-            ids[:prefix_len], device=z_t.device, dtype=z_t.dtype
+        fixed_tokens[row_idx, :prefix_len] = torch.as_tensor(
+            ids[:prefix_len], device=device, dtype=dtype
         )
-    return z_t
+        fixed_mask[row_idx, :prefix_len] = True
+    return fixed_tokens, fixed_mask
 
 
 def _print_prefix_completions(
@@ -147,92 +175,23 @@ def _print_prefix_completions(
         print()
 
 
-@torch.no_grad()
-def generate_with_steps(
-    model,
-    tokenizer,
-    *,
-    num_samples,
-    num_steps,
-    eps,
-    step_every,
-    max_samples,
-    skip_special_tokens,
-    show_steps,
-    prefix_prompts,
-):
-    sampler = model._create_sampler()
-    prefix_prompt_texts = None
-    prefix_token_ids = None
-    if sampler is None or sampler.__class__.__name__ != "GIDDSampler":
-        if prefix_prompts is not None:
-            raise NotImplementedError(
-                "Prefix-conditioned sampling in this notebook currently supports GIDDSampler only."
-            )
-        samples = model.generate_samples(
-            num_samples=num_samples, num_steps=num_steps, eps=eps
-        )
-        if show_steps:
-            texts = tokenizer.batch_decode(samples.detach().cpu(), skip_special_tokens=True)
-            for i, text in enumerate(texts):
-                print(f"--- sample {i} ---")
-                print(text)
-                print()
-        return samples, prefix_prompt_texts, prefix_token_ids
-
-    if num_steps is None:
-        num_steps = model.config.sampling.steps
-    if eps is None:
-        eps = 1e-5
-    inject_bos = getattr(model.config.sampling, "inject_bos", True)
-
-    z_t = model.hybrid_noise.sample_prior((num_samples, model.num_tokens)).to(
-        model.device
-    )
-    if inject_bos:
-        z_t[:, 0] = model.tokenizer.bos_token_id
-    if prefix_prompts is not None:
-        prefix_prompt_texts, prefix_token_ids = _tokenize_prefix_prompts(
-            tokenizer, prefix_prompts, num_samples
-        )
-        z_t = _apply_prefix_constraints(z_t, prefix_token_ids)
-
-    timesteps = torch.linspace(1 - eps, eps, num_steps + 1, device=model.device)
-    if show_steps:
-        _decode_step(
-            0,
-            num_steps,
-            timesteps[0].item(),
-            z_t,
-            tokenizer,
-            max_samples=max_samples,
-            skip_special_tokens=skip_special_tokens,
-        )
-
-    for i in range(num_steps):
-        t = timesteps[i] * torch.ones(num_samples, device=model.device)
-        s = timesteps[i + 1] * torch.ones(num_samples, device=model.device)
-        z_t = sampler.compute_posterior(model, z_t, t, s)
-        if prefix_token_ids is not None:
-            z_t = _apply_prefix_constraints(z_t, prefix_token_ids)
-        if show_steps and ((i + 1) % step_every == 0 or i == num_steps - 1):
-            _decode_step(
-                i + 1,
-                num_steps,
-                timesteps[i + 1].item(),
-                z_t,
-                tokenizer,
-                max_samples=max_samples,
-                skip_special_tokens=skip_special_tokens,
-            )
-    return z_t, prefix_prompt_texts, prefix_token_ids
-
-
 def print_run_metadata(ckpt_path: Path, ckpt_cfg) -> None:
     print("Checkpoint:", ckpt_path)
     print("Algo:", ckpt_cfg.algo.name)
     print("Loss Type:", ckpt_cfg.algo.loss_type)
     print("P_u=", ckpt_cfg.algo.p_uniform)
+
+
+def _resolve_sampling_params(model, num_steps: int | None, eps: float | None):
+    if num_steps is None:
+        num_steps = int(model.config.sampling.steps)
+    if eps is None:
+        eps = 1e-5
+    return int(num_steps), float(eps)
+
+
+def _is_gidd_sampler(sampler) -> bool:
+    return sampler is not None and sampler.__class__.__name__ == "GIDDSampler"
 
 
 @torch.no_grad()
@@ -249,36 +208,99 @@ def run_sampling(
     show_steps: bool = True,
     prefix_prompts: Sequence[str] | None = None,
 ):
-    if show_steps:
-        return generate_with_steps(
-            model,
-            tokenizer,
+    prefix_prompt_texts = None
+    prefix_token_ids = None
+    fixed_tokens = None
+    fixed_mask = None
+    sampler = model._create_sampler()
+    is_gidd = _is_gidd_sampler(sampler)
+
+    if prefix_prompts is not None:
+        if not is_gidd:
+            raise NotImplementedError(
+                "Prefix-conditioned sampling in this notebook currently supports GIDDSampler only."
+            )
+        prefix_prompt_texts, prefix_token_ids = _tokenize_prefix_prompts(
+            tokenizer, prefix_prompts, num_samples
+        )
+        fixed_tokens, fixed_mask = _build_prefix_constraints(
+            prefix_token_ids,
             num_samples=num_samples,
-            num_steps=num_steps,
-            eps=eps,
-            step_every=step_every,
-            max_samples=max_samples,
-            skip_special_tokens=skip_special_tokens,
-            show_steps=True,
-            prefix_prompts=prefix_prompts,
+            seq_len=model.num_tokens,
+            device=model.device,
+            dtype=torch.long,
         )
 
-    if prefix_prompts is None:
-        samples = model.generate_samples(num_samples=num_samples, num_steps=num_steps, eps=eps)
-        return samples, None, None
+    if not show_steps:
+        if is_gidd and fixed_tokens is not None:
+            samples = model.generate_samples(
+                num_samples=num_samples,
+                num_steps=num_steps,
+                eps=eps,
+                fixed_tokens=fixed_tokens,
+                fixed_mask=fixed_mask,
+            )
+        else:
+            samples = model.generate_samples(
+                num_samples=num_samples,
+                num_steps=num_steps,
+                eps=eps,
+            )
+        return samples, prefix_prompt_texts, prefix_token_ids
 
-    return generate_with_steps(
-        model,
-        tokenizer,
-        num_samples=num_samples,
-        num_steps=num_steps,
-        eps=eps,
-        step_every=step_every,
-        max_samples=max_samples,
-        skip_special_tokens=skip_special_tokens,
-        show_steps=False,
-        prefix_prompts=prefix_prompts,
-    )
+    resolved_steps, resolved_eps = _resolve_sampling_params(model, num_steps, eps)
+
+    if is_gidd:
+        if fixed_tokens is None:
+            trajectory = model.generate_samples(
+                num_samples=num_samples,
+                num_steps=resolved_steps,
+                eps=resolved_eps,
+                record_steps=True,
+            )
+        else:
+            trajectory = model.generate_samples(
+                num_samples=num_samples,
+                num_steps=resolved_steps,
+                eps=resolved_eps,
+                record_steps=True,
+                fixed_tokens=fixed_tokens,
+                fixed_mask=fixed_mask,
+            )
+        timesteps = torch.linspace(1 - resolved_eps, resolved_eps, resolved_steps + 1)
+        step_every = max(1, int(step_every))
+        for step_idx, z_t in enumerate(trajectory):
+            if (
+                step_idx == 0
+                or step_idx == resolved_steps
+                or step_idx % step_every == 0
+            ):
+                _decode_step(
+                    step_idx,
+                    resolved_steps,
+                    timesteps[step_idx].item(),
+                    z_t,
+                    tokenizer,
+                    max_samples=max_samples,
+                    skip_special_tokens=skip_special_tokens,
+                )
+        samples = trajectory[-1].to(model.device)
+    else:
+        samples = model.generate_samples(
+            num_samples=num_samples,
+            num_steps=resolved_steps,
+            eps=resolved_eps,
+        )
+        _decode_step(
+            resolved_steps,
+            resolved_steps,
+            resolved_eps,
+            samples,
+            tokenizer,
+            max_samples=max_samples,
+            skip_special_tokens=skip_special_tokens,
+        )
+    return samples, prefix_prompt_texts, prefix_token_ids
 
 
 def print_samples(

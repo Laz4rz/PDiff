@@ -6,7 +6,12 @@ from .absorbing import AbsorbingSampler
 from .ar import ARSampler
 from .base import Sampler
 from .bd3lm import BD3LMSampler
-from .gidd import GIDDSampler
+from .gidd import (
+    GIDDLeftToRightSampler,
+    GIDDRightToLeftSampler,
+    GIDDSampler,
+    GIDDSingleTokenSampler,
+)
 from .partition import PartitionSampler
 from .uniform import UniformSampler
 from .eb_sampler import EBSampler
@@ -20,4 +25,7 @@ __all__ = [
     "PartitionSampler",
     "UniformSampler",
     "EBSampler",
+    "GIDDLeftToRightSampler",
+    "GIDDRightToLeftSampler",
+    "GIDDSingleTokenSampler",
 ]

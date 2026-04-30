@@ -424,8 +424,9 @@ class DDiTBlock(nn.Module):
         cos, sin = rotary_cos_sin
         cos = cos.to(qkv.dtype)
         sin = sin.to(qkv.dtype)
-        if self.attn_backend == "flash_attn" or (
-            self.attn_backend == "auto" and supports_flash_attention()
+        if attn_mask is None and (
+            self.attn_backend == "flash_attn"
+            or (self.attn_backend == "auto" and supports_flash_attention())
         ):
             qkv = apply_rotary_pos_emb(qkv, cos, sin)
             return flash_varlen_attention_qkvpacked(qkv, causal=False)

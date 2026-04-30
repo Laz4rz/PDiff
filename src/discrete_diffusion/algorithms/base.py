@@ -407,7 +407,7 @@ class TrainerBase(L.LightningModule):
         return None
 
     @torch.no_grad()
-    def generate_samples(self, num_samples, num_steps=None, eps=None):
+    def generate_samples(self, num_samples, num_steps=None, eps=None, **sampler_kwargs):
         """Generate samples from the model using the new sampler system.
 
         Subclasses should not need to override this method if they have a
@@ -433,6 +433,7 @@ class TrainerBase(L.LightningModule):
             num_steps=num_steps,
             eps=eps,
             inject_bos=inject_bos,
+            **sampler_kwargs,
         )
 
     def _process_model_input(self, x0, valid_tokens):

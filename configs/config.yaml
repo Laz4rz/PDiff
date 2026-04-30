@@ -18,8 +18,9 @@ defaults:
 seed: 1
 lr_log10: null  # If set (e.g. -4.0), uses optim.lr = 10 ** lr_log10.
 
-# base directory for caching datasets and models 
-scratch_dir: ${oc.env:DISCRETE_DIFFUSION_SCRATCH_DIR,${oc.env:HOME}/.cache/discrete_diffusion}
+# base directory for caching datasets and models
+# default to project-local cache; override with DISCRETE_DIFFUSION_SCRATCH_DIR if needed
+scratch_dir: ${oc.env:DISCRETE_DIFFUSION_SCRATCH_DIR,${hydra:runtime.cwd}/.cache/discrete_diffusion}
 block_size: ${model.length}
 
 neg_infinity_mode: large-finite  # large-finite / true-inf
@@ -60,6 +61,10 @@ eval:
   generation_accuracy_max_batches: 1
   generation_accuracy_steps: null
   generation_accuracy_eps: null
+  samplers: null
+  log_sampling_steps: false
+  log_sampling_steps_max_batches: 1
+  log_sampling_steps_max_samples: 8
   run_validation_before_train: false
   generate_samples: True
   run_validation_at_train_end: true

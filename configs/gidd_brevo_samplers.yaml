@@ -3,8 +3,8 @@
 defaults:
   - config
   - override /data: brevo
-  - override /model: tiny
-  - override /algo: gidd
+  - override /model: small
+  - override /algo: ar
   - override /strategy: single-device
   - override /lr_scheduler: constant_warmup
   - _self_
@@ -24,13 +24,17 @@ data:
 
 algo:
   loss_type: gidd_constant_pi
+  time_conditioning: false
   p_uniform: 0.0
   loss_weighting: clip
   min_loss_weight: 0.1
   max_loss_weight: 1.0
+  sampler:
+    _target_: discrete_diffusion.sampling.gidd.GIDDSampler
 
 sampling:
   steps: 128
+  gidd_posterior_sampling: sample
 
 trainer:
   deterministic: true
@@ -60,6 +64,7 @@ training:
 model:
   length: 128
   max_tokens: -1
+  use_time_conditioning: false
   dropout: 0.0
 
 optim:
@@ -85,6 +90,19 @@ eval:
   generate_samples: false
   run_validation_at_train_end: false
   generation_accuracy_method: brevo_topo
+  samplers:
+    - name: ancestral
+      sampler:
+        _target_: discrete_diffusion.sampling.gidd.GIDDSampler
+    - name: left_to_right
+      sampler:
+        _target_: discrete_diffusion.sampling.gidd.GIDDLeftToRightSampler
+    - name: right_to_left
+      sampler:
+        _target_: discrete_diffusion.sampling.gidd.GIDDRightToLeftSampler
+    - name: single_token
+      sampler:
+        _target_: discrete_diffusion.sampling.gidd.GIDDSingleTokenSampler
   log_validation_completions: true
   log_validation_completions_max_samples: 8
   log_validation_completions_include_step: true
@@ -101,7 +119,7 @@ checkpointing:
     - ${hydra:runtime.output_dir}/validation_samples
 
 wandb:
-  project: brevo_compare
+  project: brevo_compare_samplers
   save_dir: ${hydra:runtime.cwd}/wandb_logs
   group: brevo-compare
   job_type: single-run

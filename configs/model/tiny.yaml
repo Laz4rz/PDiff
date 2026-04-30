@@ -10,6 +10,7 @@ length: 128
 n_blocks: 3
 n_heads: 4
 scale_by_sigma: True
+use_time_conditioning: True
 dropout: 0.1
 tie_word_embeddings: False
 vocab_lookup: True
@@ -20,6 +21,7 @@ attn_type: full
 attn_backend: flex
 
 ## N params
+# GPT-2 tokenizer
 # emb: 50k * 256 * 2 = 256 * 100k = 25 600 000
 # model: 
   # D = 256
@@ -28,3 +30,5 @@ attn_backend: flex
     # mlp: 8D^2
   # 3 * Block = 36D^2 = 36 * 256 * 256 = 2 359 296
 # ~= 28M
+
+# ASCII tokenizer
