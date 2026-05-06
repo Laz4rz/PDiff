@@ -16,7 +16,9 @@ slurm_scripts/
 .cache/
 *.sh
 !examples/**/*.sh
-tests/
+tests/*
+!tests/
+!tests/test_flm.py
 plans/
 
 gifs/

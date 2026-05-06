@@ -112,10 +112,13 @@ def train(config):
     algo_cls = hydra.utils.get_class(config.algo._target_)
 
     # Ensure dataset processing happens on rank 0 first
+    fabric_accelerator = omegaconf.OmegaConf.select(
+        config, "trainer.accelerator", default="cuda"
+    )
     fabric = L.Fabric(
         num_nodes=config.trainer.num_nodes,
         devices=config.trainer.devices,
-        accelerator="cuda",
+        accelerator=fabric_accelerator,
     )
     fabric.launch()
     with fabric.rank_zero_first():
@@ -144,11 +147,13 @@ def train(config):
     )
 
     # Lightning callbacks
-    callbacks = (
-        [hydra.utils.instantiate(cb) for _, cb in config.callbacks.items()]
-        if "callbacks" in config
-        else []
-    )
+    callbacks = []
+    if "callbacks" in config:
+        callbacks = [
+            hydra.utils.instantiate(cb)
+            for _, cb in config.callbacks.items()
+            if cb is not None
+        ]
 
     if config.training.finetune_path != "":
         assert utils.fsspec_exists(config.training.finetune_path)
@@ -166,11 +171,15 @@ def train(config):
     if config.training.get("fault_tolerant", False):
         os.environ.setdefault("PL_FAULT_TOLERANT_TRAINING", "1")
 
+    strategy = config.strategy
+    if not isinstance(strategy, str):
+        strategy = hydra.utils.instantiate(strategy)
+
     trainer = L.Trainer(
         **config.trainer,
         default_root_dir=os.getcwd(),
         callbacks=callbacks,
-        strategy=hydra.utils.instantiate(config.strategy),
+        strategy=strategy,
         logger=wandb_logger,
     )
     trainer.fit(model, train_ds, valid_ds, ckpt_path=ckpt_path)

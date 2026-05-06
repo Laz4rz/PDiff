@@ -1,0 +1,10 @@
+train: wikitext2-v1
+valid: wikitext2-v1
+tokenizer_name_or_path: gpt2
+cache_dir: ${scratch_dir}/wikitext2-v1
+wrap: True
+chunking: none
+streaming: False
+insert_train_eos: True
+insert_valid_eos: True
+add_mask_token: True

@@ -93,18 +93,50 @@ class Metrics:
         self.sample_entropy = torchmetrics.aggregation.MeanMetric()
         self.sample_entropy.set_dtype(torch.float64)
 
+    @staticmethod
+    def _target_device(*args, **kwargs) -> torch.device | None:
+        device = kwargs.get("device", None)
+        if device is not None:
+            return torch.device(device)
+        for arg in args:
+            if isinstance(arg, torch.device):
+                return arg
+            if isinstance(arg, str):
+                return torch.device(arg)
+            if isinstance(arg, torch.Tensor):
+                return arg.device
+        return None
+
+    @classmethod
+    def _move_metric(cls, metric, *args, **kwargs):
+        target_device = cls._target_device(*args, **kwargs)
+        if target_device is not None and target_device.type == "mps":
+            metric.set_dtype(torch.float32)
+            kwargs = dict(kwargs)
+            if kwargs.get("dtype") is torch.float64:
+                kwargs["dtype"] = torch.float32
+        return metric.to(*args, **kwargs)
+
     def to(self, *args, **kwargs):
-        self.sample_entropy = self.sample_entropy.to(*args, **kwargs)
-        self.train_nlls = self.train_nlls.to(*args, **kwargs)
-        self.train_acc_token = self.train_acc_token.to(*args, **kwargs)
-        self.train_acc_sample = self.train_acc_sample.to(*args, **kwargs)
-        self.train_aux = self.train_aux.to(*args, **kwargs)
-        self.valid_nlls = self.valid_nlls.to(*args, **kwargs)
-        self.valid_acc_token = self.valid_acc_token.to(*args, **kwargs)
-        self.valid_acc_sample = self.valid_acc_sample.to(*args, **kwargs)
-        self.valid_gen_acc_token = self.valid_gen_acc_token.to(*args, **kwargs)
-        self.valid_gen_acc_sample = self.valid_gen_acc_sample.to(*args, **kwargs)
-        self.valid_aux = self.valid_aux.to(*args, **kwargs)
+        self.sample_entropy = self._move_metric(self.sample_entropy, *args, **kwargs)
+        self.train_nlls = self._move_metric(self.train_nlls, *args, **kwargs)
+        self.train_acc_token = self._move_metric(self.train_acc_token, *args, **kwargs)
+        self.train_acc_sample = self._move_metric(
+            self.train_acc_sample, *args, **kwargs
+        )
+        self.train_aux = self._move_metric(self.train_aux, *args, **kwargs)
+        self.valid_nlls = self._move_metric(self.valid_nlls, *args, **kwargs)
+        self.valid_acc_token = self._move_metric(self.valid_acc_token, *args, **kwargs)
+        self.valid_acc_sample = self._move_metric(
+            self.valid_acc_sample, *args, **kwargs
+        )
+        self.valid_gen_acc_token = self._move_metric(
+            self.valid_gen_acc_token, *args, **kwargs
+        )
+        self.valid_gen_acc_sample = self._move_metric(
+            self.valid_gen_acc_sample, *args, **kwargs
+        )
+        self.valid_aux = self._move_metric(self.valid_aux, *args, **kwargs)
 
     def reset(self):
         self.sample_entropy.reset()
@@ -220,8 +252,8 @@ class BD3Metrics(Metrics):
 
     def to(self, *args, **kwargs):
         super().to(*args, **kwargs)
-        self.nfes = self.nfes.to(*args, **kwargs)
-        self.gen_entropy = self.gen_entropy.to(*args, **kwargs)
+        self.nfes = self._move_metric(self.nfes, *args, **kwargs)
+        self.gen_entropy = self._move_metric(self.gen_entropy, *args, **kwargs)
 
     def reset(self):
         super().reset()

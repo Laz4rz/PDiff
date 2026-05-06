@@ -16,6 +16,7 @@ See docs/01_algorithms.md for detailed documentation on algorithm structure.
 from .ar import AR  # noqa: F401
 from .bd3lm import BD3LM  # noqa: F401
 from .flexmdm_anyorder import FlexMDMAnyOrder  # noqa: F401
+from .flm import FLM, FMLM, FMLM_TwoModel, FMLM_TwoStage  # noqa: F401
 from .gidd import GIDD  # noqa: F401
 from .mdlm import MDLM  # noqa: F401
 from .partition_mdlm import PartitionMDLM  # noqa: F401
@@ -26,6 +27,10 @@ __all__ = [
     "AR",
     "BD3LM",
     "FlexMDMAnyOrder",
+    "FLM",
+    "FMLM",
+    "FMLM_TwoModel",
+    "FMLM_TwoStage",
     "GIDD",
     "MDLM",
     "PartitionMDLM",

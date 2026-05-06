@@ -1,0 +1,86 @@
+defaults:
+  - config
+  - override /data: wikitext2-v1
+  - override /model: tiny
+  - override /algo: flm
+  - override /noise: log-linear
+  - _self_
+
+seed: 1
+
+loader:
+  global_batch_size: 8
+  eval_global_batch_size: 8
+  batch_size: 8
+  eval_batch_size: 8
+  num_workers: 0
+  pin_memory: False
+  shuffle_train: True
+  shuffle_valid: False
+
+data:
+  cache_dir: ${hydra:runtime.cwd}/.cache/wikitext2-v1
+  add_mask_token: False
+  load_from_cache: True
+
+model:
+  _target_: discrete_diffusion.models.flm_dit.FLMDIT
+  length: 32
+  n_blocks: 8
+  n_heads: 8
+  attn_softcap: 50.0
+
+noise:
+  eps: 0
+
+training:
+  ema: 0
+  loss_precision: float32
+  fault_tolerant: false
+
+checkpointing:
+  resume_from_ckpt: false
+  clean_artifact_dirs:
+    - ${checkpointing.save_dir}/checkpoints
+    - ${hydra:runtime.output_dir}/samples
+    - ${hydra:runtime.output_dir}/validation_samples
+
+logging:
+  print_config: false
+
+eval:
+  compute_generation_accuracy: false
+  compute_generative_perplexity: false
+  generate_samples: false
+  run_validation_at_train_end: false
+  metrics_dtype: float32
+
+optim:
+  lr: 1e-3
+
+lr_scheduler:
+  num_warmup_steps: 100
+
+trainer:
+  accelerator: gpu
+  devices: 1
+  precision: 32-true
+  log_every_n_steps: 1
+  max_steps: -1
+  max_epochs: 1000
+  limit_train_batches: 0.001
+  limit_val_batches: 0.01
+  val_check_interval: 1.0
+  check_val_every_n_epoch: 50
+
+strategy: auto
+
+callbacks:
+  checkpoint_every_n_steps: null
+  checkpoint_monitor: null
+  final_metrics: null
+  sample_saver: null
+
+wandb:
+  project: flm_low_compute
+  name: wikitext2v1_flm_tiny_0001x_1000ep

@@ -8,6 +8,7 @@ import shutil
 from typing import Optional
 
 import datasets
+import numpy as np
 import tokenizers
 import torch
 import transformers
@@ -49,6 +50,25 @@ __all__ = [
 ]
 
 
+def _with_torch_collatable_format(dataset):
+    # Avoid Hugging Face formatters importing optional torchvision components.
+    return dataset
+
+
+def _collate_examples(examples):
+    batch = {}
+    for key in examples[0]:
+        values = [example[key] for example in examples]
+        first = values[0]
+        if torch.is_tensor(first):
+            batch[key] = torch.stack(values)
+        elif isinstance(first, np.ndarray):
+            batch[key] = torch.from_numpy(np.stack(values))
+        else:
+            batch[key] = torch.tensor(values)
+    return batch
+
+
 def get_dataset(
     dataset_name,
     tokenizer,
@@ -65,15 +85,19 @@ def get_dataset(
     chunking: str = "none",
     dataset_config: Optional[dict] = None,
     tokenize=True,
+    load_from_cache=False,
 ):
     # fast fix for linux/macos
     if num_proc is None:
         try:
-            num_proc = len(os.sched_getaffinity(0)) - 1
+            num_proc = max(1, len(os.sched_getaffinity(0)) - 1)
         except AttributeError:
             num_proc = max(1, os.cpu_count() - 1)
+    else:
+        num_proc = max(1, num_proc)
 
     chunking_mode = (chunking or "none").lower()
+    load_from_cache = bool(load_from_cache or LOAD_FROM_CACHE)
     if chunking_mode not in {"none", "double_newline"}:
         raise ValueError(f"Unsupported chunking mode: {chunking_mode}")
     if wrap and chunking_mode != "none":
@@ -121,14 +145,14 @@ def get_dataset(
                     metadata_path,
                 )
             # Arrow datasets loaded from disk are memory-mapped by HF Datasets.
-            return datasets.load_from_disk(_path).with_format("torch")
+            return _with_torch_collatable_format(datasets.load_from_disk(_path))
 
     can_reuse_cache = (
         cached_synth_builder is None or cached_synth_builder.should_reuse_cache()
     )
-    if utils.fsspec_exists(_path) and LOAD_FROM_CACHE and can_reuse_cache:
+    if utils.fsspec_exists(_path) and load_from_cache and can_reuse_cache:
         LOGGER.info("Loading data from: %s", _path)
-        return datasets.load_from_disk(_path).with_format("torch")
+        return _with_torch_collatable_format(datasets.load_from_disk(_path))
     LOGGER.info("Generating new data at: %s", _path)
     LOGGER.info("streaming=%s", streaming)
 
@@ -147,6 +171,10 @@ def get_dataset(
     elif dataset_name == "wikitext2":
         dataset = datasets.load_dataset(
             "wikitext", name="wikitext-2-raw-v1", cache_dir=cache_dir, revision=revision
+        )
+    elif dataset_name == "wikitext2-v1":
+        dataset = datasets.load_dataset(
+            "wikitext", name="wikitext-2-v1", cache_dir=cache_dir, revision=revision
         )
     elif dataset_name == "ptb":
         dataset = datasets.load_dataset(
@@ -294,6 +322,7 @@ def get_dataset(
 
     def preprocess_and_tokenize(example):
         if "prefixes" in example and "completions" in example:
+
             def _as_int_token_ids(value):
                 if isinstance(value, str):
                     stripped = value.strip()
@@ -502,7 +531,7 @@ def get_dataset(
                 preprocess_and_tokenize,
                 batched=True,
                 num_proc=num_proc,
-                load_from_cache_file=LOAD_FROM_CACHE,
+                load_from_cache_file=load_from_cache,
                 desc=(
                     f"Tokenizing {dataset_name.upper()} {mode} shard "
                     f"{shard_idx + 1}/{num_shards}"
@@ -521,7 +550,7 @@ def get_dataset(
                 shard_tokenized = shard_tokenized.filter(
                     _has_min_length,
                     num_proc=num_proc,
-                    load_from_cache_file=LOAD_FROM_CACHE,
+                    load_from_cache_file=load_from_cache,
                     desc=(
                         f"Filtering {dataset_name.upper()} {mode} shard "
                         f"{shard_idx + 1}/{num_shards}"
@@ -544,7 +573,7 @@ def get_dataset(
             dataset_name.upper(),
             _path,
         )
-        return datasets.load_from_disk(_path).with_format("torch")
+        return _with_torch_collatable_format(datasets.load_from_disk(_path))
 
     map_kwargs = {
         "batched": True,
@@ -553,7 +582,7 @@ def get_dataset(
         map_kwargs["remove_columns"] = ["text"]
     if not processing_streaming:
         map_kwargs.update(
-            num_proc=num_proc, load_from_cache_file=LOAD_FROM_CACHE, desc="Tokenizing"
+            num_proc=num_proc, load_from_cache_file=load_from_cache, desc="Tokenizing"
         )
     tokenized_dataset = data.map(preprocess_and_tokenize, **map_kwargs)
     tokenized_dataset = _remove_raw_columns(tokenized_dataset)
@@ -569,7 +598,7 @@ def get_dataset(
         tokenized_dataset = tokenized_dataset.filter(
             _has_min_length,
             num_proc=num_proc,
-            load_from_cache_file=LOAD_FROM_CACHE,
+            load_from_cache_file=load_from_cache,
             desc="Filtering min length",
         )
 
@@ -584,8 +613,8 @@ def get_dataset(
                     dataset_name.upper(),
                     _path,
                 )
-                return datasets.load_from_disk(_path).with_format("torch")
-        return tokenized_dataset.with_format("torch")
+                return _with_torch_collatable_format(datasets.load_from_disk(_path))
+        return _with_torch_collatable_format(tokenized_dataset)
 
     group_texts = functools.partial(
         _group_texts,
@@ -601,12 +630,11 @@ def get_dataset(
             group_texts,
             batched=True,
             num_proc=num_proc,
-            load_from_cache_file=LOAD_FROM_CACHE,
+            load_from_cache_file=load_from_cache,
             desc="Grouping",
         )
         chunked_dataset.save_to_disk(_path)
-    chunked_dataset = chunked_dataset.with_format("torch")
-    return chunked_dataset
+    return _with_torch_collatable_format(chunked_dataset)
 
 
 def get_tokenizer(config):
@@ -645,39 +673,60 @@ def get_tokenizer(config):
         tokenizer.eos_token = tokenizer.sep_token
     if tokenizer.pad_token is None:
         tokenizer.add_special_tokens({"pad_token": "[PAD]"})
-    if getattr(tokenizer, "mask_token", None) is None:
+    add_mask_token = config.algo.get(
+        "add_mask_token", config.data.get("add_mask_token", True)
+    )
+    if add_mask_token and getattr(tokenizer, "mask_token", None) is None:
         tokenizer.add_special_tokens({"mask_token": "[MASK]"})
     return tokenizer
+
+
+def _configured_device_count(config):
+    devices = config.trainer.devices
+    if isinstance(devices, int):
+        return max(1, devices)
+    if isinstance(devices, str):
+        if devices.isdigit():
+            return max(1, int(devices))
+        if "," in devices:
+            return len([device for device in devices.split(",") if device.strip()])
+        return max(1, torch.cuda.device_count())
+    try:
+        return max(1, len(devices))
+    except TypeError:
+        return max(1, torch.cuda.device_count())
 
 
 def get_dataloaders(
     config, tokenizer, skip_train=False, skip_valid=False, valid_seed=None
 ):
-    num_gpus = torch.cuda.device_count()
+    num_devices = _configured_device_count(config)
     assert config.loader.global_batch_size == (
         config.loader.batch_size
         * config.trainer.num_nodes
-        * num_gpus
+        * num_devices
         * config.trainer.accumulate_grad_batches
     )
     if (
         config.loader.global_batch_size
-        % (num_gpus * config.trainer.accumulate_grad_batches)
+        % (num_devices * config.trainer.accumulate_grad_batches)
         != 0
     ):
         raise ValueError(
             f"Train Batch Size {config.loader.batch_size} "
-            f"not divisible by {num_gpus} gpus with accumulation "
+            f"not divisible by {num_devices} devices with accumulation "
             f"{config.trainer.accumulate_grad_batches}."
         )
-    if config.loader.eval_global_batch_size % num_gpus != 0:
+    if config.loader.eval_global_batch_size % num_devices != 0:
         raise ValueError(
-            f"Eval Batch Size for {config.eval.batch_size} not divisible by {num_gpus}."
+            f"Eval Batch Size {config.loader.eval_global_batch_size} "
+            f"not divisible by {num_devices} devices."
         )
     default_chunking = config.data.get("chunking", "none")
     train_chunking = config.data.get("train_chunking", default_chunking)
     valid_chunking = config.data.get("valid_chunking", default_chunking)
     dataset_config = config.data.get("dataset_config", None)
+    load_from_cache = config.data.get("load_from_cache", False)
     if skip_train:
         train_set = None
     else:
@@ -699,6 +748,7 @@ def get_dataloaders(
             min_length=train_min_length,
             chunking=train_chunking,
             dataset_config=dataset_config,
+            load_from_cache=load_from_cache,
             tokenize=not (
                 config.data.train == "brevo"
                 and config.data.tokenizer_name_or_path == "brevo-dummy"
@@ -730,6 +780,7 @@ def get_dataloaders(
             min_length=valid_min_length,
             chunking=valid_chunking,
             dataset_config=dataset_config,
+            load_from_cache=load_from_cache,
             tokenize=not (
                 config.data.valid == "brevo"
                 and config.data.tokenizer_name_or_path == "brevo-dummy"
@@ -749,6 +800,7 @@ def get_dataloaders(
             pin_memory=config.loader.pin_memory,
             shuffle=bool(shuffle_train),
             persistent_workers=config.loader.num_workers > 0,
+            collate_fn=_collate_examples,
         )
         train_loader.tokenizer = tokenizer
     if skip_valid:
@@ -775,6 +827,7 @@ def get_dataloaders(
             shuffle=shuffle_valid,
             generator=generator,
             persistent_workers=config.loader.num_workers > 0,
+            collate_fn=_collate_examples,
         )
         valid_loader.tokenizer = tokenizer
 
