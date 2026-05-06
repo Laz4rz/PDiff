@@ -8,6 +8,7 @@ from .base import Sampler
 from .bd3lm import BD3LMSampler
 from .gidd import (
     GIDDLeftToRightSampler,
+    GIDDAdaptiveSampler,
     GIDDRightToLeftSampler,
     GIDDSampler,
     GIDDSingleTokenSampler,
@@ -26,6 +27,7 @@ __all__ = [
     "UniformSampler",
     "EBSampler",
     "GIDDLeftToRightSampler",
+    "GIDDAdaptiveSampler",
     "GIDDRightToLeftSampler",
     "GIDDSingleTokenSampler",
 ]

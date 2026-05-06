@@ -103,6 +103,9 @@ eval:
     - name: single_token
       sampler:
         _target_: discrete_diffusion.sampling.gidd.GIDDSingleTokenSampler
+    - name: adaptive
+      sampler:
+        _target_: discrete_diffusion.sampling.gidd.GIDDAdaptiveSampler
   log_validation_completions: true
   log_validation_completions_max_samples: 8
   log_validation_completions_include_step: true

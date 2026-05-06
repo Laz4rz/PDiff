@@ -520,3 +520,234 @@ class GIDDSingleTokenSampler(_GIDDTokenScheduledSampler):
         selected = torch.zeros_like(eligible)
         selected.scatter_(1, selected_idx, eligible.gather(1, selected_idx))
         return selected
+
+
+class GIDDAdaptiveSampler(GIDDSampler):
+    """Confidence-based adaptive sampler for GIDD models.
+
+    This implements the generalized confidence heuristic
+
+        p_prior(z_t) * (max_x p_theta(x | z_t) - p_theta(z_t | z_t))
+
+    from the Scaling Discrete Diffusion paper. For pure masked GIDD this reduces
+    to the standard MDM confidence sampler; for no-mask/uniform priors it can
+    revise non-mask tokens.
+    """
+
+    def __init__(
+        self,
+        config,
+        forward_process=None,
+        top_k=None,
+        temperature=None,
+        min_prior_prob=None,
+    ):
+        super().__init__(config, forward_process=forward_process)
+        if top_k is None:
+            top_k = getattr(config.sampling, "gidd_adaptive_top_k", 1)
+        self.top_k = int(top_k)
+        if self.top_k <= 0:
+            raise ValueError("gidd_adaptive_top_k must be positive.")
+
+        if temperature is None:
+            temperature = getattr(config.sampling, "gidd_adaptive_temperature", 0.0)
+        self.temperature = float(temperature)
+        if self.temperature < 0:
+            raise ValueError("gidd_adaptive_temperature must be non-negative.")
+
+        if min_prior_prob is None:
+            min_prior_prob = getattr(config.sampling, "gidd_adaptive_min_prior_prob", 0.0)
+        self.min_prior_prob = float(min_prior_prob)
+        if self.min_prior_prob < 0:
+            raise ValueError("gidd_adaptive_min_prior_prob must be non-negative.")
+
+    def _supports_mask(self, model):
+        pi = getattr(model.hybrid_noise, "pi", None)
+        if pi is not None:
+            return bool((pi[model.mask_id] > 0).item())
+
+        log_prior = getattr(model.hybrid_noise, "log_prior", None)
+        if log_prior is not None:
+            return bool((log_prior[model.mask_id].exp() > 0).item())
+
+        return True
+
+    def _drop_mask_dim(self, x, mask_id):
+        return torch.cat([x[..., :mask_id], x[..., mask_id + 1 :]], dim=-1)
+
+    def _remap_no_mask(self, x, mask_id):
+        return x - (x > int(mask_id)).to(x.dtype)
+
+    def _clean_distribution(self, model, z_t, t, attention_mask=None):
+        alpha_t = model._loglinear.alpha_t(t)
+        sigma_t = model._sigma_from_alphat(alpha_t.unsqueeze(-1))
+        sigma_t = model._process_sigma(sigma_t)
+
+        if attention_mask is None:
+            logits = model.backbone(z_t, sigma_t)
+        else:
+            logits = model.backbone(z_t, sigma_t, attention_mask=attention_mask)
+
+        if getattr(self.config.sampling, "use_float64", False):
+            logits = logits.to(torch.float64)
+        logits = logits.clone()
+        logits[..., model.mask_id] = model.neg_infinity
+
+        supports_mask = self._supports_mask(model)
+        if supports_mask:
+            clean_logits = logits
+        else:
+            if bool((z_t == int(model.mask_id)).any()):
+                raise ValueError(
+                    "No-mask GIDD adaptive sampling received mask tokens in z_t."
+                )
+            clean_logits = self._drop_mask_dim(logits, int(model.mask_id))
+
+        clean_probs = clean_logits.softmax(dim=-1)
+        return clean_logits, clean_probs, supports_mask
+
+    def _prior_prob(self, model, z_t, dtype):
+        pi = getattr(model.hybrid_noise, "pi", None)
+        if pi is not None:
+            prior = pi.to(device=z_t.device, dtype=dtype)
+            return prior[z_t]
+
+        log_prior = getattr(model.hybrid_noise, "log_prior", None)
+        if log_prior is not None:
+            prior = log_prior.to(device=z_t.device, dtype=dtype).exp()
+            return prior[z_t]
+
+        return (z_t == int(model.mask_id)).to(dtype=dtype)
+
+    def _predict_tokens(self, clean_logits, clean_probs, supports_mask, mask_id):
+        if self.temperature > 0:
+            pred = sample_categorical((clean_logits / self.temperature).softmax(dim=-1))
+        else:
+            pred = clean_probs.argmax(dim=-1)
+
+        if not supports_mask:
+            pred = pred + (pred >= int(mask_id)).to(pred.dtype)
+        return pred
+
+    def _candidate_mask(self, z_t, fixed_mask, attention_mask, prior_prob):
+        eligible = prior_prob > self.min_prior_prob
+        if attention_mask is not None:
+            if attention_mask.ndim != 2:
+                raise ValueError(
+                    "GIDDAdaptiveSampler requires a 2D attention_mask "
+                    f"[batch, seq_len], got shape {tuple(attention_mask.shape)}."
+                )
+            eligible &= attention_mask.to(device=z_t.device, dtype=torch.bool)
+        if fixed_mask is not None:
+            eligible &= ~fixed_mask.to(device=z_t.device, dtype=torch.bool)
+        return eligible
+
+    @torch.no_grad()
+    def generate(
+        self,
+        model,
+        *,
+        num_samples,
+        num_steps,
+        eps,
+        inject_bos,
+        record_steps=False,
+        fixed_tokens=None,
+        fixed_mask=None,
+        attention_mask=None,
+    ):
+        if num_steps is None:
+            num_steps = self.config.sampling.steps
+        if eps is None:
+            eps = getattr(self.config.algo, "t_eps", 1e-4)
+
+        z_t = model.hybrid_noise.sample_prior(
+            (num_samples, model.num_tokens), device=model.device
+        )
+        if inject_bos:
+            z_t[:, 0] = model.tokenizer.bos_token_id
+
+        if fixed_tokens is not None:
+            fixed_tokens = fixed_tokens.to(device=model.device, dtype=z_t.dtype)
+            if fixed_tokens.shape != z_t.shape:
+                raise ValueError(
+                    "fixed_tokens must have shape "
+                    f"{tuple(z_t.shape)}, got {tuple(fixed_tokens.shape)}"
+                )
+            if fixed_mask is None:
+                fixed_mask = torch.ones_like(fixed_tokens, dtype=torch.bool)
+            else:
+                fixed_mask = fixed_mask.to(device=model.device, dtype=torch.bool)
+                if fixed_mask.shape != z_t.shape:
+                    raise ValueError(
+                        "fixed_mask must have shape "
+                        f"{tuple(z_t.shape)}, got {tuple(fixed_mask.shape)}"
+                    )
+            z_t = torch.where(fixed_mask, fixed_tokens, z_t)
+        elif fixed_mask is not None:
+            raise ValueError("fixed_mask requires fixed_tokens.")
+
+        if attention_mask is not None:
+            attention_mask = attention_mask.to(device=model.device, dtype=torch.bool)
+
+        timesteps = torch.linspace(1 - eps, eps, int(num_steps) + 1, device=model.device)
+
+        if record_steps:
+            step_history = [z_t.detach().cpu()]
+
+        for i in range(int(num_steps)):
+            t = timesteps[i] * torch.ones(num_samples, device=model.device)
+            clean_logits, clean_probs, supports_mask = self._clean_distribution(
+                model, z_t, t, attention_mask=attention_mask
+            )
+
+            if supports_mask:
+                curr_idx = z_t
+            else:
+                curr_idx = self._remap_no_mask(z_t, int(model.mask_id))
+
+            curr_prob = clean_probs.gather(-1, curr_idx.unsqueeze(-1)).squeeze(-1)
+            best_prob = clean_probs.max(dim=-1).values
+            prior_prob = self._prior_prob(model, z_t, dtype=clean_probs.dtype)
+            confidence = prior_prob * (best_prob - curr_prob)
+
+            eligible = self._candidate_mask(
+                z_t,
+                fixed_mask=fixed_mask,
+                attention_mask=attention_mask,
+                prior_prob=prior_prob,
+            )
+            confidence = confidence.masked_fill(~eligible, -float("inf"))
+            if not bool(eligible.any()):
+                break
+
+            k = min(self.top_k, z_t.shape[1])
+            selected_scores, selected_idx = confidence.topk(k=k, dim=-1)
+            selected_values = torch.isfinite(selected_scores) & eligible.gather(
+                1, selected_idx
+            )
+            if not bool(selected_values.any()):
+                break
+
+            selected = torch.zeros_like(eligible)
+            selected.scatter_(1, selected_idx, selected_values)
+
+            pred_tokens = self._predict_tokens(
+                clean_logits,
+                clean_probs,
+                supports_mask=supports_mask,
+                mask_id=model.mask_id,
+            )
+            z_t_next = torch.where(selected, pred_tokens, z_t)
+
+            if fixed_mask is not None:
+                z_t_next = torch.where(fixed_mask, fixed_tokens, z_t_next)
+            z_t = z_t_next
+
+            if record_steps:
+                step_history.append(z_t.detach().cpu())
+
+        if record_steps:
+            return torch.stack(step_history, dim=0)
+
+        return z_t
